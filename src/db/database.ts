@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { resolveAliasToCanonicalExerciseName } from '../data/programExerciseNameAliases';
 import { SEED_DATA } from './seed';
 
 let db: SQLite.SQLiteDatabase;
@@ -77,6 +78,12 @@ export function initDatabase(): void {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS body_weight_log (
+      logged_date TEXT PRIMARY KEY,
+      weight_kg REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   const seeded = database.getFirstSync<{ value: string }>(
@@ -145,6 +152,31 @@ export function setSetting(key: string, value: string): void {
   getDb().runSync(
     'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
     [key, value]
+  );
+}
+
+/** Body weight in kg for a calendar day (YYYY-MM-DD). Replaces any existing entry for that date. */
+export function upsertBodyWeightForDate(dateYmd: string, weightKg: number): void {
+  const t = new Date().toISOString();
+  getDb().runSync(
+    'INSERT OR REPLACE INTO body_weight_log (logged_date, weight_kg, updated_at) VALUES (?, ?, ?)',
+    [dateYmd.trim(), weightKg, t]
+  );
+}
+
+export function getBodyWeightForDate(dateYmd: string): number | null {
+  const row = getDb().getFirstSync<{ weight_kg: number }>(
+    'SELECT weight_kg FROM body_weight_log WHERE logged_date = ?',
+    [dateYmd.trim()]
+  );
+  if (row == null || !Number.isFinite(row.weight_kg)) return null;
+  return row.weight_kg;
+}
+
+export function getRecentBodyWeights(limit = 20) {
+  return getDb().getAllSync<{ logged_date: string; weight_kg: number; updated_at: string }>(
+    'SELECT logged_date, weight_kg, updated_at FROM body_weight_log ORDER BY logged_date DESC LIMIT ?',
+    [limit]
   );
 }
 
@@ -241,6 +273,37 @@ export function getExerciseById(id: number) {
   return getDb().getFirstSync<any>('SELECT * FROM exercises WHERE id = ?', [id]);
 }
 
+/** Match spreadsheet / display name to a row in `exercises` (exact or normalized whitespace). */
+export function findExerciseIdByProgramName(name: string): number | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+  const target = norm(trimmed);
+  const all = getAllExercises() as { id: number; name: string }[];
+  const exact = all.find((e) => norm(e.name) === target);
+  if (exact?.id != null) return exact.id;
+
+  const canonical = resolveAliasToCanonicalExerciseName(target);
+  if (canonical) {
+    const target2 = norm(canonical);
+    const byAlias = all.find((e) => norm(e.name) === target2);
+    if (byAlias?.id != null) return byAlias.id;
+  }
+
+  const containing = all.filter((e) => {
+    const en = norm(e.name);
+    if (en.includes(target)) return true;
+    if (target.length >= 12 && en.length >= 8 && target.includes(en)) return true;
+    return false;
+  });
+  if (containing.length === 1) return containing[0].id;
+  if (containing.length > 1) {
+    const narrowed = containing.filter((e) => norm(e.name).includes(target));
+    if (narrowed.length === 1) return narrowed[0].id;
+  }
+  return null;
+}
+
 export function getAllExercises() {
   return getDb().getAllSync<any>(
     `SELECT e.*, w.name as workout_name, p.name as phase_name
@@ -287,6 +350,19 @@ export function deleteIncompleteSession(sessionId: number): void {
   const db = getDb();
   db.runSync('DELETE FROM set_logs WHERE session_id = ?', [sessionId]);
   db.runSync('DELETE FROM workout_sessions WHERE id = ? AND completed_at IS NULL', [sessionId]);
+}
+
+/** Delete a finished workout and its set logs. Returns false if the session does not exist or is not completed. */
+export function deleteCompletedWorkoutSession(sessionId: number): boolean {
+  const db = getDb();
+  const row = db.getFirstSync<{ id: number }>(
+    'SELECT id FROM workout_sessions WHERE id = ? AND completed_at IS NOT NULL',
+    [sessionId]
+  );
+  if (!row) return false;
+  db.runSync('DELETE FROM set_logs WHERE session_id = ?', [sessionId]);
+  db.runSync('DELETE FROM workout_sessions WHERE id = ?', [sessionId]);
+  return true;
 }
 
 export function getRecentSessions(limit = 30) {

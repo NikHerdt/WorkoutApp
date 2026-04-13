@@ -70,6 +70,8 @@ export interface ActiveExerciseState {
   exerciseId: number;
   exerciseName: string;
   sets: ActiveSet[];
+  /** Program workout row (slot); unchanged when swapping mid-session. */
+  slotTemplateExerciseId: number;
 }
 
 export interface PreviousSetInfo {

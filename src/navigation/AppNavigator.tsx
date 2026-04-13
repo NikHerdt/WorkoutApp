@@ -11,21 +11,28 @@ import ExercisesScreen from '../screens/ExercisesScreen';
 import ExerciseDetailScreen from '../screens/ExerciseDetailScreen';
 import AddExerciseScreen from '../screens/AddExerciseScreen';
 
+export type ExerciseDetailParams = {
+  exerciseId: number;
+  exerciseName: string;
+  /** Program slot id for phase-wide substitutions (when viewing a substitute, this is still the template row). */
+  programSlotTemplateExerciseId?: number;
+};
+
 export type HomeStackParamList = {
   Home: undefined;
   Workout: undefined;
-  ExerciseDetail: { exerciseId: number; exerciseName: string };
+  ExerciseDetail: ExerciseDetailParams;
 };
 
 export type ExercisesStackParamList = {
   ExercisesList: undefined;
-  ExerciseDetail: { exerciseId: number; exerciseName: string };
+  ExerciseDetail: ExerciseDetailParams;
   AddExercise: undefined;
 };
 
 export type HistoryStackParamList = {
   History: undefined;
-  ExerciseDetail: { exerciseId: number; exerciseName: string };
+  ExerciseDetail: ExerciseDetailParams;
 };
 
 const HomeStack = createNativeStackNavigator<HomeStackParamList>();

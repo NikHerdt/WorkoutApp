@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { initDatabase } from './src/db/database';
 import AppNavigator from './src/navigation/AppNavigator';
+import { useWorkoutStore } from './src/store/useWorkoutStore';
 import { colors } from './src/theme/colors';
 
 export default function App() {
@@ -12,6 +13,7 @@ export default function App() {
   useEffect(() => {
     try {
       initDatabase();
+      useWorkoutStore.getState().loadSettings();
       setReady(true);
     } catch (e) {
       setError(String(e));

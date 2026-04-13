@@ -15,10 +15,12 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors } from '../theme/colors';
 import { useWorkoutStore } from '../store/useWorkoutStore';
 import { HomeStackParamList } from '../navigation/AppNavigator';
-import { getExerciseById, getLastSessionSetsForExercise } from '../db/database';
+import { getExerciseById, getExercisesByWorkout, getLastSessionSetsForExercise, upsertBodyWeightForDate } from '../db/database';
 import SetRow from '../components/SetRow';
 import RestTimer from '../components/RestTimer';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
+import BodyWeightLogModal from '../components/BodyWeightLogModal';
+import { toLocalDateYmd } from '../utils/dateLocal';
 
 type Nav = NativeStackNavigationProp<HomeStackParamList, 'Workout'>;
 
@@ -26,6 +28,7 @@ export default function WorkoutScreen() {
   const navigation = useNavigation<Nav>();
   const {
     activeSessionId,
+    activeWorkoutId,
     activeWorkoutName,
     activeExercises,
     startWorkout,
@@ -41,6 +44,7 @@ export default function WorkoutScreen() {
   const [expandedExercise, setExpandedExercise] = useState<number | null>(null);
   const [exerciseDetails, setExerciseDetails] = useState<Record<number, any>>({});
   const [substituteModalForIndex, setSubstituteModalForIndex] = useState<number | null>(null);
+  const [bodyWeightModal, setBodyWeightModal] = useState(false);
 
   const activeExerciseIds = activeExercises.map((e) => e.exerciseId).join(',');
 
@@ -81,6 +85,11 @@ export default function WorkoutScreen() {
     );
   }
 
+  function completeFinishFlow() {
+    finishWorkout();
+    navigation.goBack();
+  }
+
   function handleFinish() {
     const totalCompleted = activeExercises.reduce(
       (sum, ex) => sum + ex.sets.filter((s) => s.completed).length,
@@ -96,15 +105,12 @@ export default function WorkoutScreen() {
 
     Alert.alert(
       'Finish Workout?',
-      `You've logged ${totalCompleted} sets.`,
+      `You've logged ${totalCompleted} sets. You can log body weight next (optional).`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Finish',
-          onPress: () => {
-            finishWorkout();
-            navigation.goBack();
-          },
+          onPress: () => setBodyWeightModal(true),
         },
       ]
     );
@@ -194,10 +200,19 @@ export default function WorkoutScreen() {
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.infoButton}
-                    onPress={() => navigation.navigate('ExerciseDetail', {
-                      exerciseId: exercise.exerciseId,
-                      exerciseName: exercise.exerciseName,
-                    })}
+                    onPress={() => {
+                      const templateRow =
+                        activeWorkoutId != null
+                          ? getExercisesByWorkout(activeWorkoutId)[exerciseIndex]
+                          : undefined;
+                      const slotId =
+                        exercise.slotTemplateExerciseId ?? templateRow?.id ?? exercise.exerciseId;
+                      navigation.navigate('ExerciseDetail', {
+                        exerciseId: exercise.exerciseId,
+                        exerciseName: exercise.exerciseName,
+                        programSlotTemplateExerciseId: slotId,
+                      });
+                    }}
                   >
                     <Text style={styles.infoButtonText}>Info</Text>
                   </TouchableOpacity>
@@ -291,6 +306,24 @@ export default function WorkoutScreen() {
           } else {
             run();
           }
+        }}
+      />
+
+      <BodyWeightLogModal
+        visible={bodyWeightModal}
+        title="Body weight (optional)"
+        initialDateYmd={toLocalDateYmd()}
+        lockDate
+        showSkip
+        onClose={() => setBodyWeightModal(false)}
+        onSkip={() => {
+          setBodyWeightModal(false);
+          completeFinishFlow();
+        }}
+        onSave={(dateYmd, kg) => {
+          upsertBodyWeightForDate(dateYmd, kg);
+          setBodyWeightModal(false);
+          completeFinishFlow();
         }}
       />
     </KeyboardAvoidingView>

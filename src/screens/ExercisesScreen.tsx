@@ -129,6 +129,7 @@ export default function ExercisesScreen() {
                   navigation.navigate('ExerciseDetail', {
                     exerciseId: exercise.id,
                     exerciseName: exercise.name,
+                    programSlotTemplateExerciseId: exercise.id,
                   })
                 }
               >

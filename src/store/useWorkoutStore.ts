@@ -15,7 +15,10 @@ import {
 } from '../db/database';
 import { SCHEDULE, DayType, ActiveSet, ActiveExerciseState } from '../types';
 
-function buildActiveExerciseState(exerciseId: number): ActiveExerciseState | null {
+function buildActiveExerciseState(
+  exerciseId: number,
+  slotTemplateExerciseId?: number
+): ActiveExerciseState | null {
   const ex = getExerciseById(exerciseId);
   if (!ex) return null;
 
@@ -49,6 +52,7 @@ function buildActiveExerciseState(exerciseId: number): ActiveExerciseState | nul
     exerciseId: ex.id,
     exerciseName: ex.name,
     sets,
+    slotTemplateExerciseId: slotTemplateExerciseId ?? exerciseId,
   };
 }
 
@@ -82,6 +86,8 @@ interface WorkoutState {
   finishWorkout: () => void;
   abortWorkout: () => void;
   skipRestDay: () => void;
+  /** Set which day of the 7-day program cycle is "today" (0–6). Persists to settings. */
+  setScheduleDay: (dayIndex: number) => void;
   setPhase: (phaseId: number) => void;
 
   updateSet: (exerciseIndex: number, setIndex: number, field: 'weight' | 'reps', value: string) => void;
@@ -142,7 +148,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     const activeExercises: ActiveExerciseState[] = [];
     for (const ex of exercises) {
       const effectiveId = pendingSubstitutions[ex.id] ?? ex.id;
-      const built = buildActiveExerciseState(effectiveId);
+      const built = buildActiveExerciseState(effectiveId, ex.id);
       if (built) activeExercises.push(built);
     }
 
@@ -215,6 +221,12 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     set({ scheduleDay: newDay });
   },
 
+  setScheduleDay: (dayIndex: number) => {
+    const d = ((Math.floor(dayIndex) % 7) + 7) % 7;
+    setSetting('schedule_day', String(d));
+    set({ scheduleDay: d });
+  },
+
   setPhase: (phaseId: number) => {
     setSetting('current_phase_id', String(phaseId));
     set({
@@ -269,7 +281,9 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     if (!built) return;
     set((state) => {
       const exercises = [...state.activeExercises];
-      exercises[exerciseIndex] = built;
+      const prev = exercises[exerciseIndex];
+      const slotId = prev.slotTemplateExerciseId ?? prev.exerciseId;
+      exercises[exerciseIndex] = { ...built, slotTemplateExerciseId: slotId };
       return { activeExercises: exercises };
     });
     get().stopRestTimer();

@@ -6,11 +6,20 @@ import {
   TouchableOpacity,
   StyleSheet,
   Modal,
+  Alert,
 } from 'react-native';
 import { Calendar } from 'react-native-calendars';
 import { useFocusEffect } from '@react-navigation/native';
 import { colors } from '../theme/colors';
-import { getRecentSessions, getSessionDetail } from '../db/database';
+import {
+  getRecentSessions,
+  getSessionDetail,
+  deleteCompletedWorkoutSession,
+  upsertBodyWeightForDate,
+  getBodyWeightForDate,
+} from '../db/database';
+import BodyWeightLogModal from '../components/BodyWeightLogModal';
+import { toLocalDateYmd } from '../utils/dateLocal';
 
 const DAY_COLORS: Record<string, string> = {
   push: '#FF6B35',
@@ -26,6 +35,8 @@ export default function HistoryScreen() {
   const [selectedSession, setSelectedSession] = useState<any>(null);
   const [sessionSets, setSessionSets] = useState<any[]>([]);
   const [showDetail, setShowDetail] = useState(false);
+  const [weightModalOpen, setWeightModalOpen] = useState(false);
+  const [weightModalDate, setWeightModalDate] = useState(toLocalDateYmd());
 
   useFocusEffect(
     useCallback(() => {
@@ -77,8 +88,46 @@ export default function HistoryScreen() {
     return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   }
 
+  function openWeightModal(dateYmd: string) {
+    setWeightModalDate(dateYmd);
+    setWeightModalOpen(true);
+  }
+
+  function handleDeleteSession() {
+    const id = selectedSession?.id;
+    if (id == null) return;
+    Alert.alert(
+      'Delete workout?',
+      'This removes this session and all logged sets. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            if (deleteCompletedWorkoutSession(id)) {
+              setShowDetail(false);
+              setSelectedSession(null);
+              setSessionSets([]);
+              loadSessions();
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  const sessionDateYmd = selectedSession?.completed_at?.slice(0, 10) ?? '';
+  const sessionBodyWeightKg =
+    sessionDateYmd.length >= 10 ? getBodyWeightForDate(sessionDateYmd) : null;
+
   return (
     <View style={styles.container}>
+      <TouchableOpacity style={styles.logWeightBanner} onPress={() => openWeightModal(toLocalDateYmd())}>
+        <Text style={styles.logWeightBannerText}>Log body weight</Text>
+        <Text style={styles.logWeightBannerHint}>Tap to add or update an entry (kg)</Text>
+      </TouchableOpacity>
+
       <Calendar
         style={styles.calendar}
         theme={{
@@ -109,7 +158,6 @@ export default function HistoryScreen() {
         <Text style={styles.sectionTitle}>Recent Workouts</Text>
         {sessions.length === 0 ? (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>📋</Text>
             <Text style={styles.emptyText}>No workouts logged yet.</Text>
             <Text style={styles.emptySubText}>Complete your first workout to see history here.</Text>
           </View>
@@ -151,14 +199,28 @@ export default function HistoryScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <View>
+              <View style={{ flex: 1 }}>
                 <Text style={styles.modalTitle}>{selectedSession?.workout_name}</Text>
                 <Text style={styles.modalDate}>{selectedSession?.completed_at?.slice(0, 10)}</Text>
               </View>
-              <TouchableOpacity onPress={() => setShowDetail(false)} style={styles.closeButton}>
-                <Text style={styles.closeButtonText}>✕</Text>
-              </TouchableOpacity>
+              <View style={styles.modalHeaderActions}>
+                <TouchableOpacity
+                  onPress={() => openWeightModal(sessionDateYmd || toLocalDateYmd())}
+                  style={styles.logWeightHeaderBtn}
+                >
+                  <Text style={styles.logWeightHeaderBtnText}>Weight</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleDeleteSession} style={styles.deleteSessionButton}>
+                  <Text style={styles.deleteSessionButtonText}>Delete</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowDetail(false)} style={styles.closeButton}>
+                  <Text style={styles.closeButtonText}>Close</Text>
+                </TouchableOpacity>
+              </View>
             </View>
+            {sessionBodyWeightKg != null ? (
+              <Text style={styles.sessionWeightNote}>Body weight this day: {sessionBodyWeightKg} kg</Text>
+            ) : null}
 
             <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
               {Object.values(groupedSets).map((exercise: any, idx) => (
@@ -189,12 +251,36 @@ export default function HistoryScreen() {
           </View>
         </View>
       </Modal>
+
+      <BodyWeightLogModal
+        visible={weightModalOpen}
+        title="Log body weight"
+        initialDateYmd={weightModalDate}
+        lockDate={false}
+        showSkip={false}
+        onClose={() => setWeightModalOpen(false)}
+        onSave={(dateYmd, kg) => {
+          upsertBodyWeightForDate(dateYmd, kg);
+          setWeightModalOpen(false);
+          loadSessions();
+        }}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
+
+  logWeightBanner: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  logWeightBannerText: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  logWeightBannerHint: { color: colors.textTertiary, fontSize: 12, marginTop: 2 },
 
   calendar: {
     borderBottomWidth: 1,
@@ -216,7 +302,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingTop: 40,
   },
-  emptyIcon: { fontSize: 36, marginBottom: 12 },
   emptyText: { color: colors.textSecondary, fontSize: 15, fontWeight: '600', marginBottom: 6 },
   emptySubText: { color: colors.textTertiary, fontSize: 13, textAlign: 'center' },
 
@@ -260,18 +345,46 @@ const styles = StyleSheet.create({
     padding: 20,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+    gap: 12,
   },
+  modalHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' },
   modalTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
   modalDate: { color: colors.textSecondary, fontSize: 13, marginTop: 2 },
+  sessionWeightNote: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  logWeightHeaderBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: colors.accent + '22',
+    borderWidth: 1,
+    borderColor: colors.accent + '44',
+  },
+  logWeightHeaderBtnText: { color: colors.accent, fontSize: 13, fontWeight: '700' },
+  deleteSessionButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: colors.danger + '22',
+    borderWidth: 1,
+    borderColor: colors.danger + '55',
+  },
+  deleteSessionButtonText: { color: colors.danger, fontSize: 14, fontWeight: '600' },
   closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
     backgroundColor: colors.surfaceElevated,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  closeButtonText: { color: colors.textSecondary, fontSize: 14 },
+  closeButtonText: { color: colors.textSecondary, fontSize: 14, fontWeight: '600' },
   modalScroll: { padding: 16 },
 
   modalExercise: { marginBottom: 20 },

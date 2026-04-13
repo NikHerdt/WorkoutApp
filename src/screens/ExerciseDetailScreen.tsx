@@ -1,12 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   ScrollView,
   StyleSheet,
   Dimensions,
+  TouchableOpacity,
+  Alert,
 } from 'react-native';
-import { RouteProp, useRoute } from '@react-navigation/native';
+import { RouteProp, useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { LineChart, BarChart } from 'react-native-gifted-charts';
 import { colors } from '../theme/colors';
 import {
@@ -14,14 +17,102 @@ import {
   getExerciseWeightHistory,
   getExercisePR,
   getAllExercises,
+  getExerciseById,
+  findExerciseIdByProgramName,
+  getPhaseSubstitutionsForPhase,
 } from '../db/database';
+import { getProgramSubstitutions } from '../data/exerciseProgramSubstitutions';
+import { useWorkoutStore } from '../store/useWorkoutStore';
+import type { ExerciseDetailParams } from '../navigation/AppNavigator';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_WIDTH = SCREEN_WIDTH - 64;
 
+function toFiniteExerciseId(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : -1;
+}
+
+/** When several program slots map to the same replacement, pick the template whose subs list includes it. */
+function disambiguateSubstitutionTemplates(
+  templateIds: number[],
+  replacementExerciseId: number
+): number {
+  if (templateIds.length === 1) return templateIds[0];
+  const explained = templateIds.filter((tid) => {
+    const tname = getExerciseById(tid)?.name;
+    if (!tname) return false;
+    const subs = getProgramSubstitutions(tname);
+    if (!subs) return false;
+    const o1 = subs.option1 ? findExerciseIdByProgramName(subs.option1) : null;
+    const o2 = subs.option2 ? findExerciseIdByProgramName(subs.option2) : null;
+    return o1 === replacementExerciseId || o2 === replacementExerciseId;
+  });
+  if (explained.length === 1) return explained[0];
+  if (explained.length > 1) return Math.min(...explained);
+  return Math.min(...templateIds);
+}
+
 export default function ExerciseDetailScreen() {
-  const route = useRoute<RouteProp<any, 'ExerciseDetail'>>();
-  const { exerciseId, exerciseName } = route.params as { exerciseId: number; exerciseName: string };
+  const route = useRoute<RouteProp<{ ExerciseDetail: ExerciseDetailParams }, 'ExerciseDetail'>>();
+  const navigation = useNavigation<NativeStackNavigationProp<any>>();
+  const p = route.params;
+  const exerciseId = toFiniteExerciseId(p.exerciseId);
+  const exerciseName = p.exerciseName;
+  let programSlotTemplateExerciseId: number | undefined;
+  if (p.programSlotTemplateExerciseId != null) {
+    const slot = toFiniteExerciseId(p.programSlotTemplateExerciseId);
+    programSlotTemplateExerciseId = slot >= 0 ? slot : undefined;
+  }
+
+  const activeSessionId = useWorkoutStore((s) => s.activeSessionId);
+  const activeExercises = useWorkoutStore((s) => s.activeExercises);
+  const currentPhaseId = useWorkoutStore((s) => s.currentPhaseId);
+  const pendingSubstitutions = useWorkoutStore((s) => s.pendingSubstitutions);
+  const setPendingSubstitution = useWorkoutStore((s) => s.setPendingSubstitution);
+  const replaceActiveExercise = useWorkoutStore((s) => s.replaceActiveExercise);
+
+  useFocusEffect(
+    useCallback(() => {
+      useWorkoutStore.getState().loadSettings();
+    }, [])
+  );
+
+  const phaseSubstitutionMap = useMemo(() => {
+    const fromDb = getPhaseSubstitutionsForPhase(currentPhaseId);
+    return { ...fromDb, ...pendingSubstitutions };
+  }, [currentPhaseId, pendingSubstitutions]);
+
+  const activeRowForExercise = useMemo(
+    () => activeExercises.find((e) => e.exerciseId === exerciseId),
+    [activeExercises, exerciseId]
+  );
+
+  const resolvedSlotTemplateExerciseId = useMemo(() => {
+    if (programSlotTemplateExerciseId != null && programSlotTemplateExerciseId !== exerciseId) {
+      return programSlotTemplateExerciseId;
+    }
+    const fromSession = activeRowForExercise?.slotTemplateExerciseId;
+    if (fromSession != null && fromSession !== exerciseId) {
+      return fromSession;
+    }
+    const reverseMatches: number[] = [];
+    for (const [tid, rid] of Object.entries(phaseSubstitutionMap)) {
+      if (Number(rid) === Number(exerciseId)) {
+        const t = parseInt(tid, 10);
+        if (!Number.isNaN(t)) reverseMatches.push(t);
+      }
+    }
+    if (reverseMatches.length > 0) {
+      return disambiguateSubstitutionTemplates(reverseMatches, exerciseId);
+    }
+    return programSlotTemplateExerciseId ?? exerciseId;
+  }, [
+    programSlotTemplateExerciseId,
+    exerciseId,
+    phaseSubstitutionMap,
+    activeRowForExercise?.slotTemplateExerciseId,
+  ]);
 
   const [weightHistory, setWeightHistory] = useState<any[]>([]);
   const [volumeHistory, setVolumeHistory] = useState<any[]>([]);
@@ -41,6 +132,66 @@ export default function ExerciseDetailScreen() {
     setExerciseDetail(detail);
   }, [exerciseId]);
 
+  const templateExerciseNameForSubs = useMemo(() => {
+    return (
+      getExerciseById(resolvedSlotTemplateExerciseId)?.name ?? exerciseDetail?.name ?? exerciseName
+    );
+  }, [resolvedSlotTemplateExerciseId, exerciseDetail?.name, exerciseName]);
+
+  const programSubs = useMemo(
+    () => getProgramSubstitutions(templateExerciseNameForSubs),
+    [templateExerciseNameForSubs]
+  );
+
+  const programSubOptionIds = useMemo(() => {
+    if (!programSubs) return { o1: null as number | null, o2: null as number | null };
+    return {
+      o1: programSubs.option1 ? findExerciseIdByProgramName(programSubs.option1) : null,
+      o2: programSubs.option2 ? findExerciseIdByProgramName(programSubs.option2) : null,
+    };
+  }, [programSubs]);
+
+  function applyProgramSubstitution(optionLabel: string) {
+    const replacementId = findExerciseIdByProgramName(optionLabel);
+    if (replacementId == null) {
+      Alert.alert(
+        'No match',
+        'That substitution name is not in your exercise library. Use Swap to pick an exercise manually.'
+      );
+      return;
+    }
+    if (replacementId === exerciseId) {
+      return;
+    }
+
+    if (activeSessionId) {
+      const idx = activeExercises.findIndex((e) => e.exerciseId === exerciseId);
+      if (idx < 0) {
+        Alert.alert(
+          'Not in current workout',
+          'Open this exercise from the workout screen to swap it during an active session.'
+        );
+        return;
+      }
+      const hadCompleted = activeExercises[idx].sets.some((s) => s.completed);
+      const run = () => {
+        replaceActiveExercise(idx, replacementId);
+        navigation.goBack();
+      };
+      if (hadCompleted) {
+        Alert.alert('Replace exercise?', 'Completed sets for this exercise will be cleared.', [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Replace', style: 'destructive', onPress: run },
+        ]);
+      } else {
+        run();
+      }
+    } else {
+      setPendingSubstitution(resolvedSlotTemplateExerciseId, replacementId);
+      navigation.goBack();
+    }
+  }
+
   const weightChartData = weightHistory.map((row) => ({
     value: row.max_weight,
     label: row.date.slice(5), // MM-DD
@@ -55,6 +206,14 @@ export default function ExerciseDetailScreen() {
 
   const hasData = weightHistory.length > 0;
 
+  if (exerciseId < 0) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', padding: 24 }]}>
+        <Text style={{ color: colors.text }}>Invalid exercise.</Text>
+      </View>
+    );
+  }
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 
@@ -67,7 +226,6 @@ export default function ExerciseDetailScreen() {
         </View>
       ) : (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyIcon}>📊</Text>
           <Text style={styles.emptyTitle}>No data yet</Text>
           <Text style={styles.emptyText}>Complete this exercise in a workout to see your progress here.</Text>
         </View>
@@ -102,6 +260,60 @@ export default function ExerciseDetailScreen() {
             <View style={[styles.infoRow, { alignItems: 'flex-start' }]}>
               <Text style={[styles.infoLabel, { paddingTop: 2 }]}>Cue</Text>
               <Text style={[styles.infoValue, styles.notesText]}>{exerciseDetail.notes}</Text>
+            </View>
+          ) : null}
+          {programSubs ? (
+            <View style={styles.substitutionBlock}>
+              <Text style={styles.substitutionHeading}>Program substitutions</Text>
+              <Text style={styles.substitutionSource}>
+                From Jeff Nippard Ultimate PPL 5x spreadsheet (Substitution Option 1 / Option 2).
+              </Text>
+              {!(programSubs.option1 || programSubs.option2) ? (
+                <Text style={styles.substitutionNone}>
+                  No equipment substitutes listed for this movement (e.g. prescribed stretch).
+                </Text>
+              ) : (
+                <>
+                  {programSubs.option1 ? (
+                    <View style={styles.substitutionOptionRow}>
+                      <View style={styles.substitutionOptionText}>
+                        <Text style={styles.substitutionOptionLabel}>Option 1</Text>
+                        <Text style={styles.notesText}>{programSubs.option1}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[
+                          styles.useSubButton,
+                          (programSubOptionIds.o1 == null || programSubOptionIds.o1 === exerciseId) &&
+                            styles.useSubButtonDisabled,
+                        ]}
+                        disabled={programSubOptionIds.o1 == null || programSubOptionIds.o1 === exerciseId}
+                        onPress={() => applyProgramSubstitution(programSubs.option1!)}
+                      >
+                        <Text style={styles.useSubButtonText}>Use</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                  {programSubs.option2 ? (
+                    <View style={styles.substitutionOptionRow}>
+                      <View style={styles.substitutionOptionText}>
+                        <Text style={styles.substitutionOptionLabel}>Option 2</Text>
+                        <Text style={styles.notesText}>{programSubs.option2}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[
+                          styles.useSubButton,
+                          (programSubOptionIds.o2 == null || programSubOptionIds.o2 === exerciseId) &&
+                            styles.useSubButtonDisabled,
+                        ]}
+                        disabled={programSubOptionIds.o2 == null || programSubOptionIds.o2 === exerciseId}
+                        onPress={() => applyProgramSubstitution(programSubs.option2!)}
+                      >
+                        <Text style={styles.useSubButtonText}>Use</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                </>
+              )}
             </View>
           ) : null}
         </View>
@@ -245,7 +457,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
-  emptyIcon: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: 8 },
   emptyText: { color: colors.textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 20 },
 
@@ -262,6 +473,56 @@ const styles = StyleSheet.create({
   infoLabel: { color: colors.textTertiary, fontSize: 13, width: 80 },
   infoValue: { color: colors.text, fontSize: 13, fontWeight: '500', flex: 1, textAlign: 'right' },
   notesText: { textAlign: 'left', color: colors.textSecondary, lineHeight: 18 },
+
+  substitutionBlock: {
+    marginTop: 6,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    gap: 8,
+  },
+  substitutionHeading: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  substitutionSource: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    lineHeight: 15,
+    marginBottom: 4,
+  },
+  substitutionNone: {
+    color: colors.textTertiary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  substitutionOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 4,
+  },
+  substitutionOptionText: { flex: 1, minWidth: 0 },
+  substitutionOptionLabel: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  useSubButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: colors.accent,
+  },
+  useSubButtonDisabled: {
+    opacity: 0.35,
+  },
+  useSubButtonText: { color: '#000', fontSize: 13, fontWeight: '700' },
 
   chartSection: { marginBottom: 16 },
   section: { marginBottom: 16 },

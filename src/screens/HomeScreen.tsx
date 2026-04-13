@@ -7,6 +7,7 @@ import {
   StyleSheet,
   StatusBar,
   Alert,
+  Modal,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -52,14 +53,24 @@ export default function HomeScreen() {
   const navigation = useNavigation<Nav>();
   const pendingSubstitutions = useWorkoutStore((s) => s.pendingSubstitutions);
   const setPendingSubstitution = useWorkoutStore((s) => s.setPendingSubstitution);
-  const { scheduleDay, currentPhaseId, getCurrentDayType, skipRestDay, setPhase, loadSettings, activeSessionId, abortWorkout } =
-    useWorkoutStore();
+  const {
+    scheduleDay,
+    currentPhaseId,
+    getCurrentDayType,
+    skipRestDay,
+    setPhase,
+    setScheduleDay,
+    loadSettings,
+    activeSessionId,
+    abortWorkout,
+  } = useWorkoutStore();
   const [phases, setPhases] = useState<any[]>([]);
   const [todaysExercises, setTodaysExercises] = useState<any[]>([]);
   const [showPhaseSelect, setShowPhaseSelect] = useState(false);
   const [scheduleWeekOffset, setScheduleWeekOffset] = useState(0);
   const [schedulePreviewDayIndex, setSchedulePreviewDayIndex] = useState<number | null>(null);
   const [swapTemplateId, setSwapTemplateId] = useState<number | null>(null);
+  const [scheduleDayModal, setScheduleDayModal] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -161,11 +172,25 @@ export default function HomeScreen() {
                 {!isRest ? ' Day' : ''}
               </Text>
             </View>
-            <View style={[styles.dayBadge, { backgroundColor: accentColor + '22', borderColor: accentColor + '44' }]}>
+            <TouchableOpacity
+              style={[styles.dayBadge, { backgroundColor: accentColor + '22', borderColor: accentColor + '44' }]}
+              onPress={() => {
+                if (activeSessionId) {
+                  Alert.alert(
+                    'Workout in progress',
+                    'Finish or discard your workout before changing the program day.'
+                  );
+                  return;
+                }
+                setScheduleDayModal(true);
+              }}
+              activeOpacity={0.75}
+            >
               <Text style={[styles.dayBadgeText, { color: accentColor }]}>
                 Day {(scheduleDay % 7) + 1}/7
               </Text>
-            </View>
+              <Text style={[styles.dayBadgeHint, { color: accentColor }]}>Tap to change</Text>
+            </TouchableOpacity>
           </View>
 
           {isRest ? (
@@ -221,6 +246,7 @@ export default function HomeScreen() {
                       navigation.navigate('ExerciseDetail', {
                         exerciseId: detailId,
                         exerciseName: detailName,
+                        programSlotTemplateExerciseId: ex.id,
                       })
                     }
                     activeOpacity={0.7}
@@ -352,6 +378,7 @@ export default function HomeScreen() {
                           navigation.navigate('ExerciseDetail', {
                             exerciseId: detailId,
                             exerciseName: detailName,
+                            programSlotTemplateExerciseId: ex.id,
                           })
                         }
                         activeOpacity={0.7}
@@ -385,6 +412,45 @@ export default function HomeScreen() {
         </View>
 
       </ScrollView>
+
+      <Modal visible={scheduleDayModal} animationType="fade" transparent onRequestClose={() => setScheduleDayModal(false)}>
+        <View style={styles.scheduleModalOverlay}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setScheduleDayModal(false)} />
+          <View style={styles.scheduleModalSheet}>
+            <Text style={styles.scheduleModalTitle}>Program day</Text>
+            <Text style={styles.scheduleModalHint}>
+              Choose which day of your 7-day split is active today. Finishing a workout advances this automatically
+              (for example, use this if you deleted a session and want to repeat that day).
+            </Text>
+            {SCHEDULE.map((type, i) => {
+              const active = (scheduleDay % 7) === i;
+              const c = DAY_COLORS[type];
+              return (
+                <TouchableOpacity
+                  key={i}
+                  style={[styles.scheduleDayRow, active && { borderColor: c, backgroundColor: c + '18' }]}
+                  onPress={() => {
+                    setScheduleDay(i);
+                    setScheduleDayModal(false);
+                  }}
+                >
+                  <Text style={styles.scheduleDayRowMain}>
+                    Day {i + 1} · {DAY_LABELS[type]}
+                  </Text>
+                  {active ? (
+                    <Text style={[styles.scheduleDayRowBadge, { color: c }]}>Current</Text>
+                  ) : (
+                    <Text style={styles.scheduleDayRowChevron}>Select</Text>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+            <TouchableOpacity style={styles.scheduleModalCancel} onPress={() => setScheduleDayModal(false)}>
+              <Text style={styles.scheduleModalCancelText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <ExerciseSubstituteModal
         visible={swapTemplateId !== null}
@@ -469,10 +535,56 @@ const styles = StyleSheet.create({
   dayBadge: {
     borderRadius: 8,
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 6,
     borderWidth: 1,
+    alignItems: 'flex-end',
   },
   dayBadgeText: { fontSize: 12, fontWeight: '600' },
+  dayBadgeHint: { fontSize: 10, fontWeight: '500', marginTop: 2, opacity: 0.85 },
+
+  scheduleModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  scheduleModalSheet: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 16,
+    maxHeight: '88%',
+    zIndex: 1,
+  },
+  scheduleModalTitle: { color: colors.text, fontSize: 18, fontWeight: '700', marginBottom: 8 },
+  scheduleModalHint: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  scheduleDayRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 8,
+    backgroundColor: colors.surfaceElevated,
+  },
+  scheduleDayRowMain: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  scheduleDayRowBadge: { fontSize: 12, fontWeight: '700' },
+  scheduleDayRowChevron: { color: colors.textTertiary, fontSize: 13 },
+  scheduleModalCancel: {
+    marginTop: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  scheduleModalCancelText: { color: colors.textSecondary, fontSize: 15, fontWeight: '600' },
 
   exerciseCount: {
     color: colors.textSecondary,
