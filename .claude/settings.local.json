@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3 install:*)",
+      "Bash(python3 -c ':*)",
+      "Read(//Users/herdt/Code/**)",
+      "Bash(npx create-expo-app@latest WorkoutApp2 --template blank-typescript)",
+      "Bash(cp -r /Users/herdt/Code/WorkoutApp2/. /Users/herdt/Code/WorkoutApp/)",
+      "Bash(cp -r /Users/herdt/Code/WorkoutApp2/* /Users/herdt/Code/WorkoutApp/)",
+      "Bash(cp /Users/herdt/Code/WorkoutApp2/.gitignore /Users/herdt/Code/WorkoutApp/)",
+      "Bash(cp /Users/herdt/Code/WorkoutApp2/.npmrc /Users/herdt/Code/WorkoutApp/)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(node /Users/herdt/Code/WorkoutApp/node_modules/typescript/lib/tsc.js --noEmit)",
+      "Bash(node -e \"const pkg = require\\('/Users/herdt/Code/WorkoutApp/node_modules/expo-sqlite/package.json'\\); console.log\\(pkg.version\\)\")",
+      "Bash(node -e \"const keys = Object.keys\\(require\\('/Users/herdt/Code/WorkoutApp/node_modules/expo-sqlite'\\)\\); console.log\\(keys.join\\(', '\\)\\)\")",
+      "Bash(ls /Users/herdt/Code/WorkoutApp/node_modules/expo-sqlite/build/*.d.ts)",
+      "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); print\\('main:', p.get\\('main',''\\), '\\\\nexports:', list\\(p.get\\('exports',{}\\).keys\\(\\)\\)[:5]\\)\")",
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('/Users/herdt/Code/WorkoutApp/package.json'\\)\\); [print\\(k,v\\) for k,v in d['dependencies'].items\\(\\)]\")"
+    ]
+  }
+}
