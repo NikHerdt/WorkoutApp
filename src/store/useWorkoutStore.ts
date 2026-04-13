@@ -14,6 +14,7 @@ import {
   upsertPhaseSubstitution,
 } from '../db/database';
 import { SCHEDULE, DayType, ActiveSet, ActiveExerciseState } from '../types';
+import { resolveWeekRollover } from '../data/programWeeks';
 
 function buildActiveExerciseState(
   exerciseId: number,
@@ -60,6 +61,8 @@ interface WorkoutState {
   // Schedule
   scheduleDay: number; // 0-6
   currentPhaseId: number;
+  /** 1-based week within the current phase (Excel week count per phase). */
+  phaseWeek: number;
 
   // Active workout session
   activeSessionId: number | null;
@@ -88,6 +91,7 @@ interface WorkoutState {
   skipRestDay: () => void;
   /** Set which day of the 7-day program cycle is "today" (0–6). Persists to settings. */
   setScheduleDay: (dayIndex: number) => void;
+  /** Manual phase change resets to week 1 of that phase. */
   setPhase: (phaseId: number) => void;
 
   updateSet: (exerciseIndex: number, setIndex: number, field: 'weight' | 'reps', value: string) => void;
@@ -103,6 +107,7 @@ interface WorkoutState {
 export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   scheduleDay: 0,
   currentPhaseId: 1,
+  phaseWeek: 1,
   activeSessionId: null,
   activeWorkoutId: null,
   activeWorkoutName: '',
@@ -116,10 +121,13 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   loadSettings: () => {
     const dayStr = getSetting('schedule_day');
     const phaseStr = getSetting('current_phase_id');
+    const weekStr = getSetting('phase_week');
     const phaseId = phaseStr ? parseInt(phaseStr, 10) : 1;
+    const week = weekStr ? parseInt(weekStr, 10) : 1;
     set({
       scheduleDay: dayStr ? parseInt(dayStr, 10) : 0,
       currentPhaseId: phaseId,
+      phaseWeek: Number.isFinite(week) && week >= 1 ? week : 1,
       pendingSubstitutions: getPhaseSubstitutionsForPhase(phaseId),
     });
   },
@@ -162,7 +170,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   finishWorkout: () => {
-    const { activeSessionId, activeExercises, scheduleDay } = get();
+    const { activeSessionId, activeExercises, scheduleDay, currentPhaseId, phaseWeek } = get();
     if (!activeSessionId) return;
 
     // Log all completed sets
@@ -183,8 +191,19 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
 
     completeSession(activeSessionId);
 
+    const prevDay = scheduleDay;
     const newDay = (scheduleDay + 1) % 7;
     setSetting('schedule_day', String(newDay));
+
+    let nextPhaseId = currentPhaseId;
+    let nextPhaseWeek = phaseWeek;
+    if (prevDay === 6 && newDay === 0) {
+      const rolled = resolveWeekRollover(currentPhaseId, phaseWeek);
+      nextPhaseId = rolled.currentPhaseId;
+      nextPhaseWeek = rolled.phaseWeek;
+      setSetting('current_phase_id', String(nextPhaseId));
+      setSetting('phase_week', String(nextPhaseWeek));
+    }
 
     set({
       activeSessionId: null,
@@ -194,6 +213,9 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       activeExercises: [],
       restTimerActive: false,
       scheduleDay: newDay,
+      currentPhaseId: nextPhaseId,
+      phaseWeek: nextPhaseWeek,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(nextPhaseId),
     });
   },
 
@@ -215,10 +237,27 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   skipRestDay: () => {
-    const { scheduleDay } = get();
+    const { scheduleDay, currentPhaseId, phaseWeek } = get();
+    const prevDay = scheduleDay;
     const newDay = (scheduleDay + 1) % 7;
     setSetting('schedule_day', String(newDay));
-    set({ scheduleDay: newDay });
+
+    let nextPhaseId = currentPhaseId;
+    let nextPhaseWeek = phaseWeek;
+    if (prevDay === 6 && newDay === 0) {
+      const rolled = resolveWeekRollover(currentPhaseId, phaseWeek);
+      nextPhaseId = rolled.currentPhaseId;
+      nextPhaseWeek = rolled.phaseWeek;
+      setSetting('current_phase_id', String(nextPhaseId));
+      setSetting('phase_week', String(nextPhaseWeek));
+    }
+
+    set({
+      scheduleDay: newDay,
+      currentPhaseId: nextPhaseId,
+      phaseWeek: nextPhaseWeek,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(nextPhaseId),
+    });
   },
 
   setScheduleDay: (dayIndex: number) => {
@@ -229,8 +268,10 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
 
   setPhase: (phaseId: number) => {
     setSetting('current_phase_id', String(phaseId));
+    setSetting('phase_week', '1');
     set({
       currentPhaseId: phaseId,
+      phaseWeek: 1,
       pendingSubstitutions: getPhaseSubstitutionsForPhase(phaseId),
     });
   },

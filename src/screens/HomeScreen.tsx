@@ -19,9 +19,11 @@ import {
   getWorkoutByPhaseAndType,
   getExercisesByWorkout,
   getExerciseById,
+  getPhaseSubstitutionsForPhase,
 } from '../db/database';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import { SCHEDULE, DAY_LABELS, DayType } from '../types';
+import { getWeekCountForPhase, projectPhaseAfterProgramWeeks } from '../data/programWeeks';
 
 type Nav = NativeStackNavigationProp<HomeStackParamList, 'Home'>;
 
@@ -56,6 +58,7 @@ export default function HomeScreen() {
   const {
     scheduleDay,
     currentPhaseId,
+    phaseWeek,
     getCurrentDayType,
     skipRestDay,
     setPhase,
@@ -96,11 +99,21 @@ export default function HomeScreen() {
   const previewDayType: DayType | null =
     schedulePreviewDayIndex !== null ? SCHEDULE[schedulePreviewDayIndex] : null;
 
+  const projectedPhase = useMemo(
+    () => projectPhaseAfterProgramWeeks(currentPhaseId, phaseWeek, scheduleWeekOffset),
+    [currentPhaseId, phaseWeek, scheduleWeekOffset]
+  );
+
+  const previewSubstitutionMap = useMemo(() => {
+    if (scheduleWeekOffset === 0) return pendingSubstitutions;
+    return getPhaseSubstitutionsForPhase(projectedPhase.phaseId);
+  }, [scheduleWeekOffset, pendingSubstitutions, projectedPhase.phaseId]);
+
   const previewExercises = useMemo(() => {
     if (previewDayType === null || previewDayType === 'rest') return [];
-    const workout = getWorkoutByPhaseAndType(currentPhaseId, previewDayType);
+    const workout = getWorkoutByPhaseAndType(projectedPhase.phaseId, previewDayType);
     return workout ? getExercisesByWorkout(workout.id) : [];
-  }, [previewDayType, currentPhaseId]);
+  }, [previewDayType, projectedPhase.phaseId]);
 
   const dayType = getCurrentDayType();
   const isRest = dayType === 'rest';
@@ -137,7 +150,10 @@ export default function HomeScreen() {
           onPress={() => setShowPhaseSelect(!showPhaseSelect)}
         >
           <Text style={styles.phaseChipText}>
-            {currentPhase?.name ?? 'Phase 1'} · {currentPhase?.description?.split('(')[1]?.replace(')', '') ?? ''}
+            {currentPhase?.name ?? 'Phase 1'} · Week {phaseWeek} of {getWeekCountForPhase(currentPhaseId)}
+            {currentPhase?.description
+              ? ` · ${currentPhase.description.split('(')[1]?.replace(')', '') ?? ''}`
+              : ''}
           </Text>
           <Text style={styles.chevron}>{showPhaseSelect ? '▲' : '▼'}</Text>
         </TouchableOpacity>
@@ -306,7 +322,16 @@ export default function HomeScreen() {
               <Text style={styles.weekNavBtnText}>Next week</Text>
             </TouchableOpacity>
           </View>
-          <Text style={styles.weekTapHint}>Tap a day to preview exercises for your phase.</Text>
+          <Text style={styles.weekTapHint}>
+            Tap a day to preview exercises. Each Next week step assumes you complete one full 7-day program cycle (when
+            your program day wraps from the last slot back to the first).
+          </Text>
+          {scheduleWeekOffset > 0 ? (
+            <Text style={styles.weekPreviewPhaseHint}>
+              Preview: {phases.find((p) => p.id === projectedPhase.phaseId)?.name ?? 'Phase'} · Week{' '}
+              {projectedPhase.phaseWeek} of {getWeekCountForPhase(projectedPhase.phaseId)}
+            </Text>
+          ) : null}
           <View style={styles.weekGrid}>
             {SCHEDULE.map((type, index) => {
               const isProgramToday = index === scheduleDay % 7 && scheduleWeekOffset === 0;
@@ -365,7 +390,7 @@ export default function HomeScreen() {
                 <Text style={styles.schedulePreviewEmpty}>No exercises for this day in the current phase.</Text>
               ) : (
                 previewExercises.map((ex, index) => {
-                  const subId = pendingSubstitutions[ex.id];
+                  const subId = previewSubstitutionMap[ex.id];
                   const sub = subId ? getExerciseById(subId) : null;
                   const display = sub ?? ex;
                   const detailId = sub?.id ?? ex.id;
@@ -396,7 +421,7 @@ export default function HomeScreen() {
                         </View>
                         <Text style={styles.previewExerciseChevron}>›</Text>
                       </TouchableOpacity>
-                      {!activeSessionId ? (
+                      {!activeSessionId && scheduleWeekOffset === 0 ? (
                         <View style={styles.previewRowActions}>
                           <TouchableOpacity style={styles.swapMiniBtnSmall} onPress={() => setSwapTemplateId(ex.id)}>
                             <Text style={styles.swapMiniTextSmall}>Swap</Text>
@@ -722,6 +747,12 @@ const styles = StyleSheet.create({
   weekTapHint: {
     color: colors.textTertiary,
     fontSize: 11,
+    marginBottom: 10,
+  },
+  weekPreviewPhaseHint: {
+    color: colors.accent,
+    fontSize: 12,
+    fontWeight: '600',
     marginBottom: 10,
   },
   weekGrid: {

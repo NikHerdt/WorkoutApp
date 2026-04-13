@@ -96,6 +96,8 @@ export function initDatabase(): void {
     database.runSync("INSERT OR IGNORE INTO settings (key, value) VALUES ('schedule_day', '0')");
     database.runSync("INSERT OR IGNORE INTO settings (key, value) VALUES ('current_phase_id', '1')");
   }
+
+  database.runSync("INSERT OR IGNORE INTO settings (key, value) VALUES ('phase_week', '1')");
 }
 
 function seedDatabase(database: SQLite.SQLiteDatabase): void {
