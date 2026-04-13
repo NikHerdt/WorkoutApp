@@ -20,6 +20,7 @@ import {
   getExerciseById,
   findExerciseIdByProgramName,
   getPhaseSubstitutionsForPhase,
+  getOrCreateSubstitutionExercise,
 } from '../db/database';
 import { getProgramSubstitutions } from '../data/exerciseProgramSubstitutions';
 import { useWorkoutStore } from '../store/useWorkoutStore';
@@ -151,15 +152,41 @@ export default function ExerciseDetailScreen() {
     };
   }, [programSubs]);
 
-  function applyProgramSubstitution(optionLabel: string) {
-    const replacementId = findExerciseIdByProgramName(optionLabel);
-    if (replacementId == null) {
-      Alert.alert(
-        'No match',
-        'That substitution name is not in your exercise library. Use Swap to pick an exercise manually.'
-      );
-      return;
+  /**
+   * When the user has already applied a substitution and is now viewing the replacement exercise,
+   * swap out the option that matches the current exercise and replace it with the template
+   * exercise name so they can revert or pick a different option.
+   */
+  const effectiveProgramSubs = useMemo(() => {
+    if (!programSubs) return null;
+    const isSubstituted = resolvedSlotTemplateExerciseId !== exerciseId;
+    if (!isSubstituted) return programSubs;
+    const templateName = getExerciseById(resolvedSlotTemplateExerciseId)?.name;
+    if (!templateName) return programSubs;
+    let option1 = programSubs.option1;
+    let option2 = programSubs.option2;
+    if (option1 && programSubOptionIds.o1 === exerciseId) {
+      option1 = templateName;
     }
+    if (option2 && programSubOptionIds.o2 === exerciseId) {
+      option2 = templateName;
+    }
+    return { option1, option2 };
+  }, [programSubs, resolvedSlotTemplateExerciseId, exerciseId, programSubOptionIds]);
+
+  const effectiveProgramSubOptionIds = useMemo(() => {
+    if (!effectiveProgramSubs) return { o1: null as number | null, o2: null as number | null };
+    return {
+      o1: effectiveProgramSubs.option1 ? findExerciseIdByProgramName(effectiveProgramSubs.option1) : null,
+      o2: effectiveProgramSubs.option2 ? findExerciseIdByProgramName(effectiveProgramSubs.option2) : null,
+    };
+  }, [effectiveProgramSubs]);
+
+  function applyProgramSubstitution(optionLabel: string) {
+    const replacementId = getOrCreateSubstitutionExercise(
+      optionLabel,
+      resolvedSlotTemplateExerciseId
+    );
     if (replacementId === exerciseId) {
       return;
     }
@@ -262,51 +289,51 @@ export default function ExerciseDetailScreen() {
               <Text style={[styles.infoValue, styles.notesText]}>{exerciseDetail.notes}</Text>
             </View>
           ) : null}
-          {programSubs ? (
+          {effectiveProgramSubs ? (
             <View style={styles.substitutionBlock}>
               <Text style={styles.substitutionHeading}>Program substitutions</Text>
               <Text style={styles.substitutionSource}>
                 From Jeff Nippard Ultimate PPL 5x spreadsheet (Substitution Option 1 / Option 2).
               </Text>
-              {!(programSubs.option1 || programSubs.option2) ? (
+              {!(effectiveProgramSubs.option1 || effectiveProgramSubs.option2) ? (
                 <Text style={styles.substitutionNone}>
                   No equipment substitutes listed for this movement (e.g. prescribed stretch).
                 </Text>
               ) : (
                 <>
-                  {programSubs.option1 ? (
+                  {effectiveProgramSubs.option1 ? (
                     <View style={styles.substitutionOptionRow}>
                       <View style={styles.substitutionOptionText}>
                         <Text style={styles.substitutionOptionLabel}>Option 1</Text>
-                        <Text style={styles.notesText}>{programSubs.option1}</Text>
+                        <Text style={styles.notesText}>{effectiveProgramSubs.option1}</Text>
                       </View>
                       <TouchableOpacity
                         style={[
                           styles.useSubButton,
-                          (programSubOptionIds.o1 == null || programSubOptionIds.o1 === exerciseId) &&
+                          effectiveProgramSubOptionIds.o1 === exerciseId &&
                             styles.useSubButtonDisabled,
                         ]}
-                        disabled={programSubOptionIds.o1 == null || programSubOptionIds.o1 === exerciseId}
-                        onPress={() => applyProgramSubstitution(programSubs.option1!)}
+                        disabled={effectiveProgramSubOptionIds.o1 === exerciseId}
+                        onPress={() => applyProgramSubstitution(effectiveProgramSubs.option1!)}
                       >
                         <Text style={styles.useSubButtonText}>Use</Text>
                       </TouchableOpacity>
                     </View>
                   ) : null}
-                  {programSubs.option2 ? (
+                  {effectiveProgramSubs.option2 ? (
                     <View style={styles.substitutionOptionRow}>
                       <View style={styles.substitutionOptionText}>
                         <Text style={styles.substitutionOptionLabel}>Option 2</Text>
-                        <Text style={styles.notesText}>{programSubs.option2}</Text>
+                        <Text style={styles.notesText}>{effectiveProgramSubs.option2}</Text>
                       </View>
                       <TouchableOpacity
                         style={[
                           styles.useSubButton,
-                          (programSubOptionIds.o2 == null || programSubOptionIds.o2 === exerciseId) &&
+                          effectiveProgramSubOptionIds.o2 === exerciseId &&
                             styles.useSubButtonDisabled,
                         ]}
-                        disabled={programSubOptionIds.o2 == null || programSubOptionIds.o2 === exerciseId}
-                        onPress={() => applyProgramSubstitution(programSubs.option2!)}
+                        disabled={effectiveProgramSubOptionIds.o2 === exerciseId}
+                        onPress={() => applyProgramSubstitution(effectiveProgramSubs.option2!)}
                       >
                         <Text style={styles.useSubButtonText}>Use</Text>
                       </TouchableOpacity>

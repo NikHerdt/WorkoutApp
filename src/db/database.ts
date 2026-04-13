@@ -329,6 +329,52 @@ export function insertCustomExercise(name: string, muscleGroup: string, notes: s
   return result.lastInsertRowId;
 }
 
+/**
+ * Resolve a substitution option name to an exercise id.
+ * If the exercise does not exist yet, create it as a custom exercise by copying
+ * the template exercise's volume/intensity/rest properties (only the name differs).
+ * Returns the resolved or newly-created exercise id.
+ *
+ * Uses exact name matching only (no fuzzy/contains) so that e.g. "DB Bench Press"
+ * never accidentally resolves to "DB Bench Press (No Leg Drive)".
+ */
+export function getOrCreateSubstitutionExercise(
+  optionName: string,
+  templateExerciseId: number
+): number {
+  const normStr = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+  const target = normStr(optionName);
+  const all = getAllExercises() as { id: number; name: string }[];
+
+  const exact = all.find((e) => normStr(e.name) === target);
+  if (exact) return exact.id;
+
+  const canonical = resolveAliasToCanonicalExerciseName(target);
+  if (canonical) {
+    const byAlias = all.find((e) => normStr(e.name) === normStr(canonical));
+    if (byAlias) return byAlias.id;
+  }
+
+  const template = getExerciseById(templateExerciseId);
+  const result = getDb().runSync(
+    `INSERT INTO exercises
+       (name, muscle_group, warmup_sets, working_sets, target_reps, target_rpe,
+        rest_seconds, notes, is_custom)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    [
+      optionName.trim(),
+      template?.muscle_group ?? '',
+      template?.warmup_sets ?? 0,
+      template?.working_sets ?? 1,
+      template?.target_reps ?? '',
+      template?.target_rpe ?? '',
+      template?.rest_seconds ?? 90,
+      '',
+    ]
+  );
+  return result.lastInsertRowId;
+}
+
 // Sessions
 export function createSession(workoutId: number, phaseId: number): number {
   const result = getDb().runSync(
