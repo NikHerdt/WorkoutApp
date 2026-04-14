@@ -16,6 +16,20 @@ import {
 import { SCHEDULE, DayType, ActiveSet, ActiveExerciseState } from '../types';
 import { resolveWeekRollover } from '../data/programWeeks';
 
+function renumberSets(sets: ActiveSet[]): ActiveSet[] {
+  let warmupIdx = 0;
+  let workingIdx = 0;
+  const warmupCount = sets.filter((s) => s.setType === 'warmup').length;
+  return sets.map((s) => {
+    if (s.setType === 'warmup') {
+      warmupIdx++;
+      return { ...s, setNumber: warmupIdx };
+    }
+    workingIdx++;
+    return { ...s, setNumber: warmupCount + workingIdx };
+  });
+}
+
 function buildActiveExerciseState(
   exerciseId: number,
   slotTemplateExerciseId?: number
@@ -102,8 +116,16 @@ interface WorkoutState {
   updateSet: (exerciseIndex: number, setIndex: number, field: 'weight' | 'reps', value: string) => void;
   completeSet: (exerciseIndex: number, setIndex: number, restSeconds: number) => void;
   uncompleteSet: (exerciseIndex: number, setIndex: number) => void;
+  /** Appends a new set of the given type, inserted in order (warmups before working), pre-filled from the last set of that type. */
+  addSet: (exerciseIndex: number, setType: 'warmup' | 'working') => void;
+  /** Removes a set by index if it is uncompleted. No-op if only one set remains. */
+  removeSet: (exerciseIndex: number, setIndex: number) => void;
   setPendingSubstitution: (templateExerciseId: number, replacementExerciseId: number | null) => void;
   replaceActiveExercise: (exerciseIndex: number, replacementExerciseId: number) => void;
+  /** Appends an exercise to the active session by exercise id. */
+  addExerciseToSession: (exerciseId: number) => void;
+  /** Removes an exercise from the active session by index. Stops the rest timer. */
+  removeExerciseFromSession: (exerciseIndex: number) => void;
   setRestTimerEnabled: (enabled: boolean) => void;
   startRestTimer: (seconds: number) => void;
   stopRestTimer: () => void;
@@ -337,6 +359,57 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       return { activeExercises: exercises };
     });
     get().stopRestTimer();
+  },
+
+  addSet: (exerciseIndex, setType) => {
+    set((state) => {
+      const exercises = [...state.activeExercises];
+      const ex = exercises[exerciseIndex];
+      const sets = [...ex.sets];
+      const sameType = sets.filter((s) => s.setType === setType);
+      const lastSameType = sameType[sameType.length - 1];
+      const newSet: ActiveSet = {
+        setNumber: 0,
+        setType,
+        weight: lastSameType?.weight ?? '',
+        reps: lastSameType?.reps ?? '',
+        completed: false,
+        propagationVersion: 0,
+      };
+      const warmupCount = sets.filter((s) => s.setType === 'warmup').length;
+      const insertAt = setType === 'warmup' ? warmupCount : sets.length;
+      const newSets = [...sets.slice(0, insertAt), newSet, ...sets.slice(insertAt)];
+      exercises[exerciseIndex] = { ...ex, sets: renumberSets(newSets) };
+      return { activeExercises: exercises };
+    });
+  },
+
+  removeSet: (exerciseIndex, setIndex) => {
+    set((state) => {
+      const exercises = [...state.activeExercises];
+      const ex = exercises[exerciseIndex];
+      const sets = [...ex.sets];
+      if (sets.length <= 1) return {};
+      if (sets[setIndex]?.completed) return {};
+      const newSets = sets.filter((_, i) => i !== setIndex);
+      exercises[exerciseIndex] = { ...ex, sets: renumberSets(newSets) };
+      return { activeExercises: exercises };
+    });
+  },
+
+  addExerciseToSession: (exerciseId) => {
+    const built = buildActiveExerciseState(exerciseId);
+    if (!built) return;
+    set((state) => ({ activeExercises: [...state.activeExercises, built] }));
+  },
+
+  removeExerciseFromSession: (exerciseIndex) => {
+    get().stopRestTimer();
+    set((state) => {
+      const exercises = [...state.activeExercises];
+      exercises.splice(exerciseIndex, 1);
+      return { activeExercises: exercises };
+    });
   },
 
   setPendingSubstitution: (templateExerciseId, replacementExerciseId) => {

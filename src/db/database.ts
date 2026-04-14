@@ -398,6 +398,26 @@ export function getOrCreateSubstitutionExercise(
   return result.lastInsertRowId;
 }
 
+/** Update the warmup and working set counts for an exercise (affects future sessions). */
+export function updateExerciseSetCounts(
+  exerciseId: number,
+  warmupSets: number,
+  workingSets: number
+): void {
+  getDb().runSync(
+    'UPDATE exercises SET warmup_sets = ?, working_sets = ? WHERE id = ?',
+    [Math.max(0, warmupSets), Math.max(1, workingSets), exerciseId]
+  );
+}
+
+/** Persist a new order_index for each exercise in the given array. */
+export function saveExercisesOrder(entries: { id: number; orderIndex: number }[]): void {
+  const db = getDb();
+  for (const entry of entries) {
+    db.runSync('UPDATE exercises SET order_index = ? WHERE id = ?', [entry.orderIndex, entry.id]);
+  }
+}
+
 // Sessions
 export function createSession(workoutId: number, phaseId: number): number {
   const result = getDb().runSync(

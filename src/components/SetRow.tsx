@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-nativ
 import { colors } from '../theme/colors';
 import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { ActiveSet } from '../types';
+import SwipeableRow from './SwipeableRow';
 
 interface SetRowProps {
   set: ActiveSet;
@@ -11,6 +12,8 @@ interface SetRowProps {
   onWeightChange: (value: string) => void;
   onRepsChange: (value: string) => void;
   onToggleComplete: () => void;
+  /** When provided, the row becomes swipeable to reveal a Delete action. Only shown for uncompleted sets. */
+  onDelete?: () => void;
 }
 
 export default function SetRow({
@@ -20,11 +23,13 @@ export default function SetRow({
   onWeightChange,
   onRepsChange,
   onToggleComplete,
+  onDelete,
 }: SetRowProps) {
   const isWarmup = set.setType === 'warmup';
   const isCompleted = set.completed;
+  const canDelete = !!onDelete && !isCompleted;
 
-  return (
+  const rowContent = (
     <View style={[styles.row, isWarmup && styles.warmupRow, isCompleted && styles.completedRow]}>
       {/* Set label */}
       <View style={styles.setLabel}>
@@ -83,6 +88,11 @@ export default function SetRow({
       </TouchableOpacity>
     </View>
   );
+
+  if (canDelete) {
+    return <SwipeableRow onDelete={onDelete!}>{rowContent}</SwipeableRow>;
+  }
+  return rowContent;
 }
 
 const styles = StyleSheet.create({

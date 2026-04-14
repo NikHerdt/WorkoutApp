@@ -10,6 +10,7 @@ import HistoryScreen from '../screens/HistoryScreen';
 import ExercisesScreen from '../screens/ExercisesScreen';
 import ExerciseDetailScreen from '../screens/ExerciseDetailScreen';
 import AddExerciseScreen from '../screens/AddExerciseScreen';
+import EditWorkoutScreen from '../screens/EditWorkoutScreen';
 
 export type ExerciseDetailParams = {
   exerciseId: number;
@@ -22,6 +23,7 @@ export type HomeStackParamList = {
   Home: undefined;
   Workout: undefined;
   ExerciseDetail: ExerciseDetailParams;
+  EditWorkout: { workoutId: number; workoutName: string };
 };
 
 export type ExercisesStackParamList = {
@@ -50,9 +52,10 @@ const screenOptions = {
 function HomeStackNavigator() {
   return (
     <HomeStack.Navigator screenOptions={screenOptions}>
-      <HomeStack.Screen name="Home" component={HomeScreen} options={{ title: "Jeff Nippard PPL" }} />
+      <HomeStack.Screen name="Home" component={HomeScreen} options={{ title: "PPLxUL" }} />
       <HomeStack.Screen name="Workout" component={WorkoutScreen} options={{ title: "Workout", headerBackTitle: '' }} />
       <HomeStack.Screen name="ExerciseDetail" component={ExerciseDetailScreen} options={({ route }) => ({ title: route.params.exerciseName, headerBackTitle: '' })} />
+      <HomeStack.Screen name="EditWorkout" component={EditWorkoutScreen} options={({ route }) => ({ title: `Edit: ${route.params.workoutName}`, headerBackTitle: '' })} />
     </HomeStack.Navigator>
   );
 }

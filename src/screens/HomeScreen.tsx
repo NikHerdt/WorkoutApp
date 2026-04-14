@@ -246,7 +246,18 @@ export default function HomeScreen() {
         {/* Exercise preview */}
         {!isRest && todaysExercises.length > 0 && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Today's exercises</Text>
+            <View style={styles.sectionTitleRow}>
+              <Text style={styles.sectionTitle}>Today's exercises</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  const workout = getWorkoutByPhaseAndType(currentPhaseId, dayType);
+                  if (!workout) return;
+                  navigation.navigate('EditWorkout', { workoutId: workout.id, workoutName: workout.name });
+                }}
+              >
+                <Text style={styles.sectionEditBtn}>Edit</Text>
+              </TouchableOpacity>
+            </View>
             <Text style={styles.sectionHint}>
               Swap applies for the whole current phase (every week and day that uses this slot). To revert, swap
               again and choose the original exercise. In-workout Swap only affects the current session.
@@ -671,13 +682,23 @@ const styles = StyleSheet.create({
   skipButtonText: { color: colors.textSecondary, fontSize: 14, fontWeight: '600' },
 
   section: { marginBottom: 20 },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
   sectionTitle: {
     color: colors.textSecondary,
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 1,
-    marginBottom: 6,
     textTransform: 'uppercase',
+  },
+  sectionEditBtn: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: '600',
   },
   sectionHint: {
     color: colors.textTertiary,

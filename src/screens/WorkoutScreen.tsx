@@ -38,6 +38,10 @@ export default function WorkoutScreen() {
     updateSet,
     completeSet,
     uncompleteSet,
+    addSet,
+    removeSet,
+    addExerciseToSession,
+    removeExerciseFromSession,
     replaceActiveExercise,
   } = useWorkoutStore();
 
@@ -45,6 +49,7 @@ export default function WorkoutScreen() {
   const [expandedExercise, setExpandedExercise] = useState<number | null>(null);
   const [exerciseDetails, setExerciseDetails] = useState<Record<number, any>>({});
   const [substituteModalForIndex, setSubstituteModalForIndex] = useState<number | null>(null);
+  const [addExerciseModal, setAddExerciseModal] = useState(false);
   const [bodyWeightModal, setBodyWeightModal] = useState(false);
 
   const activeExerciseIds = activeExercises.map((e) => e.exerciseId).join(',');
@@ -121,6 +126,23 @@ export default function WorkoutScreen() {
     const sets = activeExercises[exerciseIndex].sets;
     const warmupCount = sets.filter((s) => s.setType === 'warmup').length;
     return setIndex - warmupCount + 1;
+  }
+
+  function handleRemoveExercise(exerciseIndex: number) {
+    const ex = activeExercises[exerciseIndex];
+    const completedCount = ex.sets.filter((s) => s.completed).length;
+    if (completedCount > 0) {
+      Alert.alert(
+        'Remove exercise?',
+        `${ex.exerciseName} has ${completedCount} logged set${completedCount > 1 ? 's' : ''} that will be discarded.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Remove', style: 'destructive', onPress: () => removeExerciseFromSession(exerciseIndex) },
+        ]
+      );
+    } else {
+      removeExerciseFromSession(exerciseIndex);
+    }
   }
 
   if (activeExercises.length === 0) {
@@ -217,6 +239,12 @@ export default function WorkoutScreen() {
                   >
                     <Text style={styles.infoButtonText}>Info</Text>
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.removeExerciseButton}
+                    onPress={() => handleRemoveExercise(exerciseIndex)}
+                  >
+                    <Text style={styles.removeExerciseText}>×</Text>
+                  </TouchableOpacity>
                 </View>
               </TouchableOpacity>
 
@@ -258,21 +286,52 @@ export default function WorkoutScreen() {
                         completeSet(exerciseIndex, setIndex, detail?.rest_seconds ?? 90);
                       }
                     }}
+                    onDelete={
+                      exercise.sets.length > 1
+                        ? () => removeSet(exerciseIndex, setIndex)
+                        : undefined
+                    }
                   />
                 );
               })}
 
-              {/* Rest time indicator */}
-              {detail?.rest_seconds > 0 && (
-                <View style={styles.restIndicator}>
+              {/* Set management + rest indicator */}
+              <View style={styles.cardFooter}>
+                <TouchableOpacity
+                  style={styles.setControlBtn}
+                  onPress={() => {
+                    Alert.alert('Add set', 'Choose set type', [
+                      {
+                        text: 'Warmup set',
+                        onPress: () => addSet(exerciseIndex, 'warmup'),
+                      },
+                      {
+                        text: 'Working set',
+                        onPress: () => addSet(exerciseIndex, 'working'),
+                      },
+                      { text: 'Cancel', style: 'cancel' },
+                    ]);
+                  }}
+                >
+                  <Text style={styles.setControlText}>+ Add set</Text>
+                </TouchableOpacity>
+                {detail?.rest_seconds > 0 && (
                   <Text style={styles.restIndicatorText}>
                     Rest {Math.floor(detail.rest_seconds / 60)}:{String(detail.rest_seconds % 60).padStart(2, '0')}
                   </Text>
-                </View>
-              )}
+                )}
+              </View>
             </View>
           );
         })}
+
+        {/* Add exercise */}
+        <TouchableOpacity
+          style={styles.addExerciseBtn}
+          onPress={() => setAddExerciseModal(true)}
+        >
+          <Text style={styles.addExerciseBtnText}>+ Add exercise</Text>
+        </TouchableOpacity>
 
         <View style={{ height: 32 }} />
       </ScrollView>
@@ -307,6 +366,16 @@ export default function WorkoutScreen() {
           } else {
             run();
           }
+        }}
+      />
+
+      <ExerciseSubstituteModal
+        visible={addExerciseModal}
+        title="Add exercise"
+        onClose={() => setAddExerciseModal(false)}
+        onSelect={(id) => {
+          addExerciseToSession(id);
+          setAddExerciseModal(false);
         }}
       />
 
@@ -459,11 +528,58 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
 
-  restIndicator: {
-    padding: 10,
-    alignItems: 'center',
+  cardFooter: {
     borderTopWidth: 1,
     borderTopColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  setControlBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+  },
+  setControlText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
   },
   restIndicatorText: { color: colors.textTertiary, fontSize: 12 },
+
+  removeExerciseButton: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  removeExerciseText: {
+    color: colors.textTertiary,
+    fontSize: 20,
+    lineHeight: 24,
+    fontWeight: '400',
+  },
+
+  addExerciseBtn: {
+    marginHorizontal: 12,
+    marginTop: 12,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: colors.border,
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+  },
+  addExerciseBtnText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
 });
