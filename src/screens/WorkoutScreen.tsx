@@ -260,7 +260,9 @@ export default function WorkoutScreen() {
                 <Text style={[styles.colHeader, { width: 30 }]}>SET</Text>
                 <Text style={[styles.colHeader, { flex: 1, textAlign: 'center' }]}>PREV</Text>
                 <Text style={[styles.colHeader, { width: 64, textAlign: 'center' }]}>{WEIGHT_UNIT_HEADER}</Text>
-                <Text style={[styles.colHeader, { width: 64, textAlign: 'center' }]}>REPS</Text>
+                <Text style={[styles.colHeader, { width: 64, textAlign: 'center' }]}>
+                  {exercise.isTimed ? 'TIME' : 'REPS'}
+                </Text>
                 <Text style={[styles.colHeader, { width: 48 }]}></Text>
               </View>
 
@@ -291,6 +293,7 @@ export default function WorkoutScreen() {
                         ? () => removeSet(exerciseIndex, setIndex)
                         : undefined
                     }
+                    isTimed={exercise.isTimed}
                   />
                 );
               })}

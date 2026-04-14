@@ -74,6 +74,8 @@ export interface ActiveExerciseState {
   sets: ActiveSet[];
   /** Program workout row (slot); unchanged when swapping mid-session. */
   slotTemplateExerciseId: number;
+  /** True when the exercise target_reps contains 'HOLD' (timed holds rather than rep-counted sets). */
+  isTimed: boolean;
 }
 
 export interface PreviousSetInfo {

@@ -14,6 +14,8 @@ interface SetRowProps {
   onToggleComplete: () => void;
   /** When provided, the row becomes swipeable to reveal a Delete action. Only shown for uncompleted sets. */
   onDelete?: () => void;
+  /** When true, the reps field is treated as seconds (timed hold exercises). */
+  isTimed?: boolean;
 }
 
 export default function SetRow({
@@ -24,6 +26,7 @@ export default function SetRow({
   onRepsChange,
   onToggleComplete,
   onDelete,
+  isTimed = false,
 }: SetRowProps) {
   const isWarmup = set.setType === 'warmup';
   const isCompleted = set.completed;
@@ -44,9 +47,13 @@ export default function SetRow({
 
       {/* Previous */}
       <View style={styles.previous}>
-        {previousWeight ? (
+        {previousReps ? (
           <Text style={styles.previousText}>
-            {previousWeight} {WEIGHT_UNIT} × {previousReps}
+            {isTimed
+              ? (previousWeight && parseFloat(previousWeight) > 0
+                  ? `${previousWeight} ${WEIGHT_UNIT} × ${previousReps}s`
+                  : `${previousReps}s`)
+              : `${previousWeight} ${WEIGHT_UNIT} × ${previousReps}`}
           </Text>
         ) : (
           <Text style={styles.previousEmpty}>—</Text>
@@ -65,13 +72,13 @@ export default function SetRow({
         selectTextOnFocus
       />
 
-      {/* Reps input */}
+      {/* Reps / time input */}
       <TextInput
         style={[styles.input, isWarmup && styles.warmupInput, isCompleted && styles.completedInput]}
         value={set.reps}
         onChangeText={onRepsChange}
         keyboardType="number-pad"
-        placeholder="reps"
+        placeholder={isTimed ? 'sec' : 'reps'}
         placeholderTextColor={colors.placeholder}
         editable={!isCompleted}
         selectTextOnFocus

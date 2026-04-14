@@ -37,6 +37,7 @@ function buildActiveExerciseState(
   const ex = getExerciseById(exerciseId);
   if (!ex) return null;
 
+  const isTimed = String(ex.target_reps ?? '').includes('HOLD');
   const prevSets = getLastSessionSetsForExercise(ex.id);
   const lastWeight = prevSets.find((s: any) => s.set_type === 'working')?.weight ?? 0;
   const lastReps = prevSets.find((s: any) => s.set_type === 'working')?.reps ?? 0;
@@ -48,7 +49,7 @@ function buildActiveExerciseState(
       setNumber: i + 1,
       setType: 'warmup',
       weight: lastWeight > 0 ? String(Math.round(lastWeight * 0.6)) : '',
-      reps: String(ex.target_reps ?? '').includes('HOLD') ? '30' : '',
+      reps: isTimed ? (lastReps > 0 ? String(lastReps) : '30') : '',
       completed: false,
       propagationVersion: 0,
     });
@@ -59,7 +60,7 @@ function buildActiveExerciseState(
       setNumber: ex.warmup_sets + i + 1,
       setType: 'working',
       weight: lastWeight > 0 ? String(lastWeight) : '',
-      reps: lastReps > 0 ? String(lastReps) : '',
+      reps: isTimed ? (lastReps > 0 ? String(lastReps) : '30') : (lastReps > 0 ? String(lastReps) : ''),
       completed: false,
       propagationVersion: 0,
     });
@@ -69,6 +70,7 @@ function buildActiveExerciseState(
     exerciseId: ex.id,
     exerciseName: ex.name,
     sets,
+    isTimed,
     slotTemplateExerciseId: slotTemplateExerciseId ?? exerciseId,
   };
 }
