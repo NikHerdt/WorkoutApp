@@ -25,6 +25,7 @@ import {
 import { getProgramSubstitutions } from '../data/exerciseProgramSubstitutions';
 import { useWorkoutStore } from '../store/useWorkoutStore';
 import type { ExerciseDetailParams } from '../navigation/AppNavigator';
+import { WEIGHT_UNIT, WEIGHT_UNIT_HEADER } from '../constants/weightUnits';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_WIDTH = SCREEN_WIDTH - 64;
@@ -248,7 +249,7 @@ export default function ExerciseDetailScreen() {
       {pr ? (
         <View style={styles.prCard}>
           <Text style={styles.prLabel}>ALL-TIME PR</Text>
-          <Text style={styles.prWeight}>{pr.max_weight} kg</Text>
+          <Text style={styles.prWeight}>{pr.max_weight} {WEIGHT_UNIT}</Text>
           <Text style={styles.prReps}>× {pr.reps} reps · {pr.date}</Text>
         </View>
       ) : (
@@ -349,7 +350,7 @@ export default function ExerciseDetailScreen() {
       {/* Weight over time */}
       {hasData && (
         <View style={styles.chartSection}>
-          <Text style={styles.chartTitle}>Weight Over Time (kg)</Text>
+          <Text style={styles.chartTitle}>Weight Over Time ({WEIGHT_UNIT})</Text>
           <View style={styles.chartContainer}>
             <LineChart
               data={weightChartData}
@@ -386,7 +387,7 @@ export default function ExerciseDetailScreen() {
                 autoAdjustPointerLabelPosition: true,
                 pointerLabelComponent: (items: any[]) => (
                   <View style={styles.tooltip}>
-                    <Text style={styles.tooltipText}>{items[0]?.value} kg</Text>
+                    <Text style={styles.tooltipText}>{items[0]?.value} {WEIGHT_UNIT}</Text>
                     <Text style={styles.tooltipDate}>{items[0]?.label}</Text>
                   </View>
                 ),
@@ -399,7 +400,7 @@ export default function ExerciseDetailScreen() {
       {/* Volume over time */}
       {volumeChartData.length > 0 && (
         <View style={styles.chartSection}>
-          <Text style={styles.chartTitle}>Volume Over Time (kg)</Text>
+          <Text style={styles.chartTitle}>Volume Over Time ({WEIGHT_UNIT})</Text>
           <View style={styles.chartContainer}>
             <BarChart
               data={volumeChartData}
@@ -430,17 +431,17 @@ export default function ExerciseDetailScreen() {
           <Text style={styles.chartTitle}>Recent Sessions</Text>
           <View style={styles.tableHeader}>
             <Text style={[styles.tableCell, styles.tableHeaderText, { flex: 1.2 }]}>DATE</Text>
-            <Text style={[styles.tableCell, styles.tableHeaderText]}>MAX KG</Text>
+            <Text style={[styles.tableCell, styles.tableHeaderText]}>MAX {WEIGHT_UNIT_HEADER}</Text>
             <Text style={[styles.tableCell, styles.tableHeaderText]}>VOLUME</Text>
           </View>
           {volumeHistory.slice(-8).reverse().map((row, idx) => (
             <View key={idx} style={[styles.tableRow, idx % 2 === 0 && styles.tableRowAlt]}>
               <Text style={[styles.tableCell, { flex: 1.2, color: colors.textSecondary }]}>{row.date}</Text>
               <Text style={[styles.tableCell, { color: colors.text, fontWeight: '600' }]}>
-                {weightHistory.find((w) => w.date === row.date)?.max_weight ?? '—'} kg
+                {weightHistory.find((w) => w.date === row.date)?.max_weight ?? '—'} {WEIGHT_UNIT}
               </Text>
               <Text style={[styles.tableCell, { color: colors.accent }]}>
-                {Math.round(row.total_volume)} kg
+                {Math.round(row.total_volume)} {WEIGHT_UNIT}
               </Text>
             </View>
           ))}

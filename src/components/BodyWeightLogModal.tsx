@@ -11,6 +11,7 @@ import {
   Alert,
 } from 'react-native';
 import { colors } from '../theme/colors';
+import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { isValidYmd } from '../utils/dateLocal';
 
 type Props = {
@@ -22,7 +23,7 @@ type Props = {
   /** Shown when lockDate (finish flow). */
   showSkip?: boolean;
   onClose: () => void;
-  onSave: (dateYmd: string, weightKg: number) => void;
+  onSave: (dateYmd: string, weightLbs: number) => void;
   onSkip?: () => void;
 };
 
@@ -37,12 +38,12 @@ export default function BodyWeightLogModal({
   onSkip,
 }: Props) {
   const [dateStr, setDateStr] = useState(initialDateYmd);
-  const [kgStr, setKgStr] = useState('');
+  const [lbsStr, setLbsStr] = useState('');
 
   useEffect(() => {
     if (visible) {
       setDateStr(initialDateYmd);
-      setKgStr('');
+      setLbsStr('');
     }
   }, [visible, initialDateYmd]);
 
@@ -52,12 +53,12 @@ export default function BodyWeightLogModal({
       Alert.alert('Invalid date', 'Use YYYY-MM-DD format.');
       return;
     }
-    const kg = parseFloat(kgStr.replace(',', '.'));
-    if (!Number.isFinite(kg) || kg <= 0 || kg > 500) {
-      Alert.alert('Invalid weight', 'Enter a realistic body weight in kg (0–500).');
+    const lbs = parseFloat(lbsStr.replace(',', '.'));
+    if (!Number.isFinite(lbs) || lbs <= 0 || lbs > 1200) {
+      Alert.alert('Invalid weight', `Enter a realistic body weight in ${WEIGHT_UNIT} (0–1200).`);
       return;
     }
-    onSave(date, kg);
+    onSave(date, lbs);
   }
 
   return (
@@ -83,12 +84,12 @@ export default function BodyWeightLogModal({
               autoCorrect={false}
             />
           )}
-          <Text style={styles.label}>Body weight (kg)</Text>
+          <Text style={styles.label}>Body weight ({WEIGHT_UNIT})</Text>
           <TextInput
             style={styles.input}
-            value={kgStr}
-            onChangeText={setKgStr}
-            placeholder="e.g. 78.5"
+            value={lbsStr}
+            onChangeText={setLbsStr}
+            placeholder="e.g. 175"
             placeholderTextColor={colors.placeholder}
             keyboardType="decimal-pad"
           />

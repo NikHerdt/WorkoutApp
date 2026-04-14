@@ -64,6 +64,8 @@ export interface ActiveSet {
   weight: string;
   reps: string;
   completed: boolean;
+  /** Incremented when values are propagated from a previous set. Used as a remount key. */
+  propagationVersion: number;
 }
 
 export interface ActiveExerciseState {

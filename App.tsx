@@ -5,6 +5,7 @@ import { initDatabase } from './src/db/database';
 import AppNavigator from './src/navigation/AppNavigator';
 import { useWorkoutStore } from './src/store/useWorkoutStore';
 import { colors } from './src/theme/colors';
+import { requestNotificationPermissions } from './src/utils/restTimerNotification';
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -18,6 +19,7 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
+    requestNotificationPermissions();
   }, []);
 
   if (error) {

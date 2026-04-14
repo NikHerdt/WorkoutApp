@@ -21,6 +21,7 @@ import RestTimer from '../components/RestTimer';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import BodyWeightLogModal from '../components/BodyWeightLogModal';
 import { toLocalDateYmd } from '../utils/dateLocal';
+import { WEIGHT_UNIT_HEADER } from '../constants/weightUnits';
 
 type Nav = NativeStackNavigationProp<HomeStackParamList, 'Workout'>;
 
@@ -230,7 +231,7 @@ export default function WorkoutScreen() {
               <View style={styles.columnHeaders}>
                 <Text style={[styles.colHeader, { width: 30 }]}>SET</Text>
                 <Text style={[styles.colHeader, { flex: 1, textAlign: 'center' }]}>PREV</Text>
-                <Text style={[styles.colHeader, { width: 64, textAlign: 'center' }]}>KG</Text>
+                <Text style={[styles.colHeader, { width: 64, textAlign: 'center' }]}>{WEIGHT_UNIT_HEADER}</Text>
                 <Text style={[styles.colHeader, { width: 64, textAlign: 'center' }]}>REPS</Text>
                 <Text style={[styles.colHeader, { width: 48 }]}></Text>
               </View>
@@ -244,7 +245,7 @@ export default function WorkoutScreen() {
 
                 return (
                   <SetRow
-                    key={setIndex}
+                    key={`${setIndex}-${setItem.propagationVersion}`}
                     set={setItem}
                     previousWeight={prevSet ? String(prevSet.weight) : undefined}
                     previousReps={prevSet ? String(prevSet.reps) : undefined}
@@ -320,8 +321,8 @@ export default function WorkoutScreen() {
           setBodyWeightModal(false);
           completeFinishFlow();
         }}
-        onSave={(dateYmd, kg) => {
-          upsertBodyWeightForDate(dateYmd, kg);
+        onSave={(dateYmd, lbs) => {
+          upsertBodyWeightForDate(dateYmd, lbs);
           setBodyWeightModal(false);
           completeFinishFlow();
         }}

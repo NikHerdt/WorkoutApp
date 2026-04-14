@@ -6,28 +6,47 @@ import {
   StyleSheet,
   Animated,
   Modal,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { colors } from '../theme/colors';
 import { useWorkoutStore } from '../store/useWorkoutStore';
+import {
+  scheduleRestEndNotification,
+  cancelRestEndNotification,
+} from '../utils/restTimerNotification';
 
 export default function RestTimer() {
-  const { restTimerActive, restTimerSeconds, restTimerTotal, stopRestTimer, tickRestTimer } =
-    useWorkoutStore();
+  const {
+    restTimerActive,
+    restTimerSeconds,
+    restTimerTotal,
+    stopRestTimer,
+    tickRestTimer,
+    syncRestTimer,
+  } = useWorkoutStore();
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const progressAnim = useRef(new Animated.Value(1)).current;
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
+  // Schedule / cancel notification and manage interval when timer toggles
   useEffect(() => {
     if (restTimerActive) {
+      scheduleRestEndNotification(restTimerSeconds);
+
       intervalRef.current = setInterval(() => {
         tickRestTimer();
       }, 1000);
+
       Animated.timing(progressAnim, {
         toValue: 0,
         duration: restTimerSeconds * 1000,
         useNativeDriver: false,
       }).start();
     } else {
+      cancelRestEndNotification();
+
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -39,12 +58,51 @@ export default function RestTimer() {
     };
   }, [restTimerActive]);
 
+  // When app comes back to foreground, resync the countdown from the stored end time
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      const prev = appStateRef.current;
+      appStateRef.current = nextState;
+
+      if (
+        nextState === 'active' &&
+        (prev === 'background' || prev === 'inactive') &&
+        useWorkoutStore.getState().restTimerActive
+      ) {
+        syncRestTimer();
+
+        // Restart the interval and re-sync animation from the corrected seconds value
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        const remaining = useWorkoutStore.getState().restTimerSeconds;
+        const total = useWorkoutStore.getState().restTimerTotal;
+
+        if (remaining > 0) {
+          progressAnim.stopAnimation();
+          progressAnim.setValue(total > 0 ? remaining / total : 0);
+          Animated.timing(progressAnim, {
+            toValue: 0,
+            duration: remaining * 1000,
+            useNativeDriver: false,
+          }).start();
+
+          intervalRef.current = setInterval(() => {
+            tickRestTimer();
+          }, 1000);
+        }
+      }
+    });
+
+    return () => subscription.remove();
+  }, []);
+
   if (!restTimerActive) return null;
 
   const minutes = Math.floor(restTimerSeconds / 60);
   const seconds = restTimerSeconds % 60;
   const timeStr = `${minutes}:${String(seconds).padStart(2, '0')}`;
-  const progress = restTimerTotal > 0 ? restTimerSeconds / restTimerTotal : 0;
 
   return (
     <Modal transparent animationType="slide" visible={restTimerActive}>

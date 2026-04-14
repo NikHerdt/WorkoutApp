@@ -36,6 +36,7 @@ function buildActiveExerciseState(
       weight: lastWeight > 0 ? String(Math.round(lastWeight * 0.6)) : '',
       reps: String(ex.target_reps ?? '').includes('HOLD') ? '30' : '',
       completed: false,
+      propagationVersion: 0,
     });
   }
 
@@ -46,6 +47,7 @@ function buildActiveExerciseState(
       weight: lastWeight > 0 ? String(lastWeight) : '',
       reps: lastReps > 0 ? String(lastReps) : '',
       completed: false,
+      propagationVersion: 0,
     });
   }
 
@@ -78,9 +80,12 @@ interface WorkoutState {
   pendingSubstitutions: Record<number, number>;
 
   // Rest timer
+  restTimerEnabled: boolean;
   restTimerActive: boolean;
   restTimerSeconds: number;
   restTimerTotal: number;
+  /** Unix ms timestamp when the current rest period ends. Used to resync after backgrounding. */
+  restTimerEndTime: number | null;
 
   // Actions
   loadSettings: () => void;
@@ -99,9 +104,11 @@ interface WorkoutState {
   uncompleteSet: (exerciseIndex: number, setIndex: number) => void;
   setPendingSubstitution: (templateExerciseId: number, replacementExerciseId: number | null) => void;
   replaceActiveExercise: (exerciseIndex: number, replacementExerciseId: number) => void;
+  setRestTimerEnabled: (enabled: boolean) => void;
   startRestTimer: (seconds: number) => void;
   stopRestTimer: () => void;
   tickRestTimer: () => void;
+  syncRestTimer: () => void;
 }
 
 export const useWorkoutStore = create<WorkoutState>((set, get) => ({
@@ -114,14 +121,17 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   activeDayType: null,
   activeExercises: [],
   pendingSubstitutions: {},
+  restTimerEnabled: true,
   restTimerActive: false,
   restTimerSeconds: 0,
   restTimerTotal: 0,
+  restTimerEndTime: null,
 
   loadSettings: () => {
     const dayStr = getSetting('schedule_day');
     const phaseStr = getSetting('current_phase_id');
     const weekStr = getSetting('phase_week');
+    const restTimerEnabledStr = getSetting('rest_timer_enabled');
     const phaseId = phaseStr ? parseInt(phaseStr, 10) : 1;
     const week = weekStr ? parseInt(weekStr, 10) : 1;
     set({
@@ -129,6 +139,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       currentPhaseId: phaseId,
       phaseWeek: Number.isFinite(week) && week >= 1 ? week : 1,
       pendingSubstitutions: getPhaseSubstitutionsForPhase(phaseId),
+      restTimerEnabled: restTimerEnabledStr === null ? true : restTimerEnabledStr === '1',
     });
   },
 
@@ -212,6 +223,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       activeDayType: null,
       activeExercises: [],
       restTimerActive: false,
+      restTimerEndTime: null,
       scheduleDay: newDay,
       currentPhaseId: nextPhaseId,
       phaseWeek: nextPhaseWeek,
@@ -233,6 +245,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       restTimerActive: false,
       restTimerSeconds: 0,
       restTimerTotal: 0,
+      restTimerEndTime: null,
     });
   },
 
@@ -290,12 +303,27 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     set((state) => {
       const exercises = [...state.activeExercises];
       const sets = [...exercises[exerciseIndex].sets];
-      sets[setIndex] = { ...sets[setIndex], completed: true };
+      const completedSet = sets[setIndex];
+      sets[setIndex] = { ...completedSet, completed: true };
+
+      // Propagate this set's weight and reps to the next uncompleted set of the same type.
+      const nextIndex = sets.findIndex(
+        (s, i) => i > setIndex && !s.completed && s.setType === completedSet.setType
+      );
+      if (nextIndex !== -1) {
+        sets[nextIndex] = {
+          ...sets[nextIndex],
+          weight: completedSet.weight,
+          reps: completedSet.reps,
+          propagationVersion: (sets[nextIndex].propagationVersion ?? 0) + 1,
+        };
+      }
+
       exercises[exerciseIndex] = { ...exercises[exerciseIndex], sets };
       return { activeExercises: exercises };
     });
 
-    if (restSeconds > 0) {
+    if (restSeconds > 0 && get().restTimerEnabled) {
       get().startRestTimer(restSeconds);
     }
   },
@@ -330,20 +358,44 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     get().stopRestTimer();
   },
 
+  setRestTimerEnabled: (enabled) => {
+    setSetting('rest_timer_enabled', enabled ? '1' : '0');
+    set({ restTimerEnabled: enabled });
+    if (!enabled) {
+      set({ restTimerActive: false, restTimerSeconds: 0, restTimerTotal: 0, restTimerEndTime: null });
+    }
+  },
+
   startRestTimer: (seconds) => {
-    set({ restTimerActive: true, restTimerSeconds: seconds, restTimerTotal: seconds });
+    set({
+      restTimerActive: true,
+      restTimerSeconds: seconds,
+      restTimerTotal: seconds,
+      restTimerEndTime: Date.now() + seconds * 1000,
+    });
   },
 
   stopRestTimer: () => {
-    set({ restTimerActive: false, restTimerSeconds: 0, restTimerTotal: 0 });
+    set({ restTimerActive: false, restTimerSeconds: 0, restTimerTotal: 0, restTimerEndTime: null });
   },
 
   tickRestTimer: () => {
     set((state) => {
       if (state.restTimerSeconds <= 1) {
-        return { restTimerActive: false, restTimerSeconds: 0 };
+        return { restTimerActive: false, restTimerSeconds: 0, restTimerEndTime: null };
       }
       return { restTimerSeconds: state.restTimerSeconds - 1 };
     });
+  },
+
+  syncRestTimer: () => {
+    const { restTimerEndTime, restTimerActive } = get();
+    if (!restTimerActive || restTimerEndTime === null) return;
+    const remaining = Math.ceil((restTimerEndTime - Date.now()) / 1000);
+    if (remaining <= 0) {
+      set({ restTimerActive: false, restTimerSeconds: 0, restTimerTotal: 0, restTimerEndTime: null });
+    } else {
+      set({ restTimerSeconds: remaining });
+    }
   },
 }));

@@ -8,6 +8,7 @@ import {
   StatusBar,
   Alert,
   Modal,
+  Switch,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -66,6 +67,8 @@ export default function HomeScreen() {
     loadSettings,
     activeSessionId,
     abortWorkout,
+    restTimerEnabled,
+    setRestTimerEnabled,
   } = useWorkoutStore();
   const [phases, setPhases] = useState<any[]>([]);
   const [todaysExercises, setTodaysExercises] = useState<any[]>([]);
@@ -434,6 +437,27 @@ export default function HomeScreen() {
               )}
             </View>
           ) : null}
+        </View>
+
+        {/* Settings */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Settings</Text>
+          <View style={styles.settingRow}>
+            <View style={styles.settingRowText}>
+              <Text style={styles.settingLabel}>Rest timer</Text>
+              <Text style={styles.settingHint}>
+                {restTimerEnabled
+                  ? 'Shows countdown after each set. Runs in background.'
+                  : 'No countdown will appear after completing a set.'}
+              </Text>
+            </View>
+            <Switch
+              value={restTimerEnabled}
+              onValueChange={setRestTimerEnabled}
+              trackColor={{ false: colors.border, true: colors.accent + '88' }}
+              thumbColor={restTimerEnabled ? colors.accent : colors.textTertiary}
+            />
+          </View>
         </View>
 
       </ScrollView>
@@ -840,4 +864,19 @@ const styles = StyleSheet.create({
   previewExerciseName: { color: colors.text, fontSize: 14, fontWeight: '600' },
   previewExerciseMeta: { color: colors.textTertiary, fontSize: 12, marginTop: 2 },
   previewExerciseChevron: { color: colors.textTertiary, fontSize: 18, paddingLeft: 4 },
+
+  settingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 12,
+  },
+  settingRowText: { flex: 1 },
+  settingLabel: { color: colors.text, fontSize: 15, fontWeight: '600', marginBottom: 2 },
+  settingHint: { color: colors.textTertiary, fontSize: 12, lineHeight: 16 },
 });

@@ -19,6 +19,7 @@ import {
   getBodyWeightForDate,
 } from '../db/database';
 import BodyWeightLogModal from '../components/BodyWeightLogModal';
+import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { toLocalDateYmd } from '../utils/dateLocal';
 
 const DAY_COLORS: Record<string, string> = {
@@ -118,14 +119,14 @@ export default function HistoryScreen() {
   }
 
   const sessionDateYmd = selectedSession?.completed_at?.slice(0, 10) ?? '';
-  const sessionBodyWeightKg =
+  const sessionBodyWeightLbs =
     sessionDateYmd.length >= 10 ? getBodyWeightForDate(sessionDateYmd) : null;
 
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.logWeightBanner} onPress={() => openWeightModal(toLocalDateYmd())}>
         <Text style={styles.logWeightBannerText}>Log body weight</Text>
-        <Text style={styles.logWeightBannerHint}>Tap to add or update an entry (kg)</Text>
+        <Text style={styles.logWeightBannerHint}>Tap to add or update an entry ({WEIGHT_UNIT})</Text>
       </TouchableOpacity>
 
       <Calendar
@@ -218,8 +219,10 @@ export default function HistoryScreen() {
                 </TouchableOpacity>
               </View>
             </View>
-            {sessionBodyWeightKg != null ? (
-              <Text style={styles.sessionWeightNote}>Body weight this day: {sessionBodyWeightKg} kg</Text>
+            {sessionBodyWeightLbs != null ? (
+              <Text style={styles.sessionWeightNote}>
+                Body weight this day: {sessionBodyWeightLbs} {WEIGHT_UNIT}
+              </Text>
             ) : null}
 
             <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
@@ -235,11 +238,11 @@ export default function HistoryScreen() {
                         {set.set_type === 'warmup' ? 'W' : set.set_number}
                       </Text>
                       <Text style={[styles.modalSetData, set.set_type === 'warmup' && styles.modalWarmupText]}>
-                        {set.weight} kg × {set.reps} reps
+                        {set.weight} {WEIGHT_UNIT} × {set.reps} reps
                       </Text>
                       {set.set_type === 'working' && (
                         <Text style={styles.modalVolume}>
-                          = {Math.round(set.weight * set.reps)} kg vol
+                          = {Math.round(set.weight * set.reps)} {WEIGHT_UNIT} vol
                         </Text>
                       )}
                     </View>
@@ -259,8 +262,8 @@ export default function HistoryScreen() {
         lockDate={false}
         showSkip={false}
         onClose={() => setWeightModalOpen(false)}
-        onSave={(dateYmd, kg) => {
-          upsertBodyWeightForDate(dateYmd, kg);
+        onSave={(dateYmd, lbs) => {
+          upsertBodyWeightForDate(dateYmd, lbs);
           setWeightModalOpen(false);
           loadSessions();
         }}

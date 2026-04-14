@@ -81,10 +81,12 @@ export function initDatabase(): void {
 
     CREATE TABLE IF NOT EXISTS body_weight_log (
       logged_date TEXT PRIMARY KEY,
-      weight_kg REAL NOT NULL,
+      weight_lbs REAL NOT NULL,
       updated_at TEXT NOT NULL
     );
   `);
+
+  migrateKgToLbs(database);
 
   const seeded = database.getFirstSync<{ value: string }>(
     "SELECT value FROM settings WHERE key = 'seeded'"
@@ -98,6 +100,25 @@ export function initDatabase(): void {
   }
 
   database.runSync("INSERT OR IGNORE INTO settings (key, value) VALUES ('phase_week', '1')");
+}
+
+const MIGRATION_KG_TO_LBS = 2.2046226218;
+
+/** One-time: convert stored kg values to lbs for body weight and set weights (user_version < 2). */
+function migrateKgToLbs(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  const v = verRow?.user_version ?? 0;
+  if (v >= 2) return;
+
+  const cols = database.getAllSync<{ name: string }>('PRAGMA table_info(body_weight_log)');
+  const hasKg = cols.some((c) => c.name === 'weight_kg');
+  if (hasKg) {
+    database.runSync('UPDATE body_weight_log SET weight_kg = weight_kg * ?', [MIGRATION_KG_TO_LBS]);
+    database.execSync('ALTER TABLE body_weight_log RENAME COLUMN weight_kg TO weight_lbs');
+  }
+
+  database.runSync('UPDATE set_logs SET weight = weight * ? WHERE weight > 0', [MIGRATION_KG_TO_LBS]);
+  database.execSync('PRAGMA user_version = 2');
 }
 
 function seedDatabase(database: SQLite.SQLiteDatabase): void {
@@ -157,27 +178,27 @@ export function setSetting(key: string, value: string): void {
   );
 }
 
-/** Body weight in kg for a calendar day (YYYY-MM-DD). Replaces any existing entry for that date. */
-export function upsertBodyWeightForDate(dateYmd: string, weightKg: number): void {
+/** Body weight in lbs for a calendar day (YYYY-MM-DD). Replaces any existing entry for that date. */
+export function upsertBodyWeightForDate(dateYmd: string, weightLbs: number): void {
   const t = new Date().toISOString();
   getDb().runSync(
-    'INSERT OR REPLACE INTO body_weight_log (logged_date, weight_kg, updated_at) VALUES (?, ?, ?)',
-    [dateYmd.trim(), weightKg, t]
+    'INSERT OR REPLACE INTO body_weight_log (logged_date, weight_lbs, updated_at) VALUES (?, ?, ?)',
+    [dateYmd.trim(), weightLbs, t]
   );
 }
 
 export function getBodyWeightForDate(dateYmd: string): number | null {
-  const row = getDb().getFirstSync<{ weight_kg: number }>(
-    'SELECT weight_kg FROM body_weight_log WHERE logged_date = ?',
+  const row = getDb().getFirstSync<{ weight_lbs: number }>(
+    'SELECT weight_lbs FROM body_weight_log WHERE logged_date = ?',
     [dateYmd.trim()]
   );
-  if (row == null || !Number.isFinite(row.weight_kg)) return null;
-  return row.weight_kg;
+  if (row == null || !Number.isFinite(row.weight_lbs)) return null;
+  return row.weight_lbs;
 }
 
 export function getRecentBodyWeights(limit = 20) {
-  return getDb().getAllSync<{ logged_date: string; weight_kg: number; updated_at: string }>(
-    'SELECT logged_date, weight_kg, updated_at FROM body_weight_log ORDER BY logged_date DESC LIMIT ?',
+  return getDb().getAllSync<{ logged_date: string; weight_lbs: number; updated_at: string }>(
+    'SELECT logged_date, weight_lbs, updated_at FROM body_weight_log ORDER BY logged_date DESC LIMIT ?',
     [limit]
   );
 }

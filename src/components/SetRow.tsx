@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { colors } from '../theme/colors';
+import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { ActiveSet } from '../types';
 
 interface SetRowProps {
@@ -40,7 +41,7 @@ export default function SetRow({
       <View style={styles.previous}>
         {previousWeight ? (
           <Text style={styles.previousText}>
-            {previousWeight}kg × {previousReps}
+            {previousWeight} {WEIGHT_UNIT} × {previousReps}
           </Text>
         ) : (
           <Text style={styles.previousEmpty}>—</Text>
@@ -53,7 +54,7 @@ export default function SetRow({
         value={set.weight}
         onChangeText={onWeightChange}
         keyboardType="decimal-pad"
-        placeholder="kg"
+        placeholder={WEIGHT_UNIT}
         placeholderTextColor={colors.placeholder}
         editable={!isCompleted}
         selectTextOnFocus
