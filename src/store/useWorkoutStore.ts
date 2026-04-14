@@ -15,6 +15,11 @@ import {
 } from '../db/database';
 import { SCHEDULE, DayType, ActiveSet, ActiveExerciseState } from '../types';
 import { resolveWeekRollover } from '../data/programWeeks';
+import {
+  buildWarmupPresets,
+  parseWorkingRepsFromTarget,
+  applyWarmupPresetsToIncompleteWarmups,
+} from '../utils/warmupSets';
 
 function renumberSets(sets: ActiveSet[]): ActiveSet[] {
   let warmupIdx = 0;
@@ -41,15 +46,21 @@ function buildActiveExerciseState(
   const prevSets = getLastSessionSetsForExercise(ex.id);
   const lastWeight = prevSets.find((s: any) => s.set_type === 'working')?.weight ?? 0;
   const lastReps = prevSets.find((s: any) => s.set_type === 'working')?.reps ?? 0;
+  const workingRepsForWarmups =
+    lastReps > 0 ? lastReps : parseWorkingRepsFromTarget(ex.target_reps ?? '');
+  const warmupPresets = buildWarmupPresets(lastWeight, workingRepsForWarmups, ex.warmup_sets, isTimed);
 
   const sets: ActiveSet[] = [];
 
   for (let i = 0; i < ex.warmup_sets; i++) {
+    const preset = warmupPresets[i];
     sets.push({
       setNumber: i + 1,
       setType: 'warmup',
-      weight: lastWeight > 0 ? String(Math.round(lastWeight * 0.6)) : '',
-      reps: isTimed ? (lastReps > 0 ? String(lastReps) : '30') : '',
+      weight: preset?.weight ?? '',
+      reps:
+        preset?.reps ??
+        (isTimed ? (lastReps > 0 ? String(lastReps) : '30') : ''),
       completed: false,
       propagationVersion: 0,
     });
@@ -316,9 +327,28 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   updateSet: (exerciseIndex, setIndex, field, value) => {
     set((state) => {
       const exercises = [...state.activeExercises];
-      const sets = [...exercises[exerciseIndex].sets];
+      const ex = exercises[exerciseIndex];
+      const sets = [...ex.sets];
       sets[setIndex] = { ...sets[setIndex], [field]: value };
-      exercises[exerciseIndex] = { ...exercises[exerciseIndex], sets };
+
+      const warmupCount = sets.filter((s) => s.setType === 'warmup').length;
+      const firstWorkingIdx = warmupCount;
+      if (
+        warmupCount > 0 &&
+        setIndex === firstWorkingIdx &&
+        sets[setIndex]?.setType === 'working' &&
+        (field === 'weight' || field === 'reps')
+      ) {
+        const dbEx = getExerciseById(ex.exerciseId);
+        const synced = applyWarmupPresetsToIncompleteWarmups(
+          sets,
+          dbEx?.target_reps ?? '',
+          ex.isTimed
+        );
+        exercises[exerciseIndex] = { ...ex, sets: synced };
+      } else {
+        exercises[exerciseIndex] = { ...ex, sets };
+      }
       return { activeExercises: exercises };
     });
   },
@@ -381,7 +411,16 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       const warmupCount = sets.filter((s) => s.setType === 'warmup').length;
       const insertAt = setType === 'warmup' ? warmupCount : sets.length;
       const newSets = [...sets.slice(0, insertAt), newSet, ...sets.slice(insertAt)];
-      exercises[exerciseIndex] = { ...ex, sets: renumberSets(newSets) };
+      const renumbered = renumberSets(newSets);
+      const dbEx = getExerciseById(ex.exerciseId);
+      exercises[exerciseIndex] = {
+        ...ex,
+        sets: applyWarmupPresetsToIncompleteWarmups(
+          renumbered,
+          dbEx?.target_reps ?? '',
+          ex.isTimed
+        ),
+      };
       return { activeExercises: exercises };
     });
   },
@@ -394,7 +433,16 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       if (sets.length <= 1) return {};
       if (sets[setIndex]?.completed) return {};
       const newSets = sets.filter((_, i) => i !== setIndex);
-      exercises[exerciseIndex] = { ...ex, sets: renumberSets(newSets) };
+      const renumbered = renumberSets(newSets);
+      const dbEx = getExerciseById(ex.exerciseId);
+      exercises[exerciseIndex] = {
+        ...ex,
+        sets: applyWarmupPresetsToIncompleteWarmups(
+          renumbered,
+          dbEx?.target_reps ?? '',
+          ex.isTimed
+        ),
+      };
       return { activeExercises: exercises };
     });
   },
