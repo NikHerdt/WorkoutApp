@@ -11,6 +11,7 @@ import ExercisesScreen from '../screens/ExercisesScreen';
 import ExerciseDetailScreen from '../screens/ExerciseDetailScreen';
 import AddExerciseScreen from '../screens/AddExerciseScreen';
 import EditWorkoutScreen from '../screens/EditWorkoutScreen';
+import AnalyticsScreen from '../screens/AnalyticsScreen';
 
 export type ExerciseDetailParams = {
   exerciseId: number;
@@ -37,9 +38,14 @@ export type HistoryStackParamList = {
   ExerciseDetail: ExerciseDetailParams;
 };
 
+export type AnalyticsStackParamList = {
+  Analytics: undefined;
+};
+
 const HomeStack = createNativeStackNavigator<HomeStackParamList>();
 const ExercisesStack = createNativeStackNavigator<ExercisesStackParamList>();
 const HistoryStack = createNativeStackNavigator<HistoryStackParamList>();
+const AnalyticsStack = createNativeStackNavigator<AnalyticsStackParamList>();
 const Tab = createBottomTabNavigator();
 
 const screenOptions = {
@@ -79,11 +85,20 @@ function HistoryStackNavigator() {
   );
 }
 
+function AnalyticsStackNavigator() {
+  return (
+    <AnalyticsStack.Navigator screenOptions={screenOptions}>
+      <AnalyticsStack.Screen name="Analytics" component={AnalyticsScreen} options={{ title: 'Stats' }} />
+    </AnalyticsStack.Navigator>
+  );
+}
+
 function TabIcon({ name, focused }: { name: string; focused: boolean }) {
   const icons: Record<string, string> = {
     Today: '⚡',
     History: '📅',
     Exercises: '🏋️',
+    Stats: '📊',
   };
   return (
     <View style={{ alignItems: 'center', justifyContent: 'center' }}>
@@ -131,6 +146,11 @@ export default function AppNavigator() {
           name="ExercisesTab"
           component={ExercisesStackNavigator}
           options={{ tabBarIcon: ({ focused }) => <TabIcon name="Exercises" focused={focused} /> }}
+        />
+        <Tab.Screen
+          name="StatsTab"
+          component={AnalyticsStackNavigator}
+          options={{ tabBarIcon: ({ focused }) => <TabIcon name="Stats" focused={focused} /> }}
         />
       </Tab.Navigator>
     </NavigationContainer>

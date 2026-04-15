@@ -16,6 +16,7 @@ import {
   getExerciseVolumeHistory,
   getExerciseWeightHistory,
   getExercisePR,
+  getEstimated1RMHistory,
   getAllExercises,
   getExerciseById,
   findExerciseIdByProgramName,
@@ -118,6 +119,7 @@ export default function ExerciseDetailScreen() {
 
   const [weightHistory, setWeightHistory] = useState<any[]>([]);
   const [volumeHistory, setVolumeHistory] = useState<any[]>([]);
+  const [estimated1RMHistory, setEstimated1RMHistory] = useState<any[]>([]);
   const [pr, setPr] = useState<any>(null);
   const [exerciseDetail, setExerciseDetail] = useState<any>(null);
 
@@ -125,11 +127,13 @@ export default function ExerciseDetailScreen() {
     const weightData = getExerciseWeightHistory(exerciseId);
     const volumeData = getExerciseVolumeHistory(exerciseId);
     const prData = getExercisePR(exerciseId);
+    const e1rmData = getEstimated1RMHistory(exerciseId);
     const allExs = getAllExercises();
     const detail = allExs.find((e: any) => e.id === exerciseId);
 
     setWeightHistory(weightData);
     setVolumeHistory(volumeData);
+    setEstimated1RMHistory(e1rmData);
     setPr(prData);
     setExerciseDetail(detail);
   }, [exerciseId]);
@@ -230,6 +234,12 @@ export default function ExerciseDetailScreen() {
     value: Math.round(row.total_volume),
     label: row.date.slice(5),
     frontColor: colors.blue,
+  }));
+
+  const e1rmChartData = estimated1RMHistory.map((row) => ({
+    value: row.estimated_1rm,
+    label: row.date.slice(5),
+    dataPointText: String(row.estimated_1rm),
   }));
 
   const hasData = weightHistory.length > 0;
@@ -388,6 +398,59 @@ export default function ExerciseDetailScreen() {
                 pointerLabelComponent: (items: any[]) => (
                   <View style={styles.tooltip}>
                     <Text style={styles.tooltipText}>{items[0]?.value} {WEIGHT_UNIT}</Text>
+                    <Text style={styles.tooltipDate}>{items[0]?.label}</Text>
+                  </View>
+                ),
+              }}
+            />
+          </View>
+        </View>
+      )}
+
+      {/* Estimated 1RM over time */}
+      {e1rmChartData.length > 0 && (
+        <View style={styles.chartSection}>
+          <Text style={styles.chartTitle}>Estimated 1RM ({WEIGHT_UNIT})</Text>
+          <Text style={styles.chartSubtitle}>Epley formula: weight × (1 + reps / 30)</Text>
+          <View style={styles.chartContainer}>
+            <LineChart
+              data={e1rmChartData}
+              width={CHART_WIDTH}
+              height={180}
+              color={'#A78BFA'}
+              thickness={2}
+              dataPointsColor={'#A78BFA'}
+              dataPointsRadius={4}
+              startFillColor={'#A78BFA30'}
+              endFillColor={'#A78BFA00'}
+              areaChart
+              curved
+              xAxisColor={colors.border}
+              yAxisColor={colors.border}
+              yAxisTextStyle={{ color: colors.textTertiary, fontSize: 10 }}
+              xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
+              rulesColor={colors.border}
+              rulesType="dashed"
+              backgroundColor={colors.surface}
+              noOfSections={4}
+              showVerticalLines={false}
+              hideDataPoints={e1rmChartData.length > 15}
+              initialSpacing={16}
+              endSpacing={16}
+              pointerConfig={{
+                pointerStripColor: '#A78BFA',
+                pointerStripWidth: 1,
+                pointerColor: '#A78BFA',
+                radius: 5,
+                pointerLabelWidth: 80,
+                pointerLabelHeight: 40,
+                activatePointersDelay: 300,
+                autoAdjustPointerLabelPosition: true,
+                pointerLabelComponent: (items: any[]) => (
+                  <View style={[styles.tooltip, { borderColor: '#A78BFA44' }]}>
+                    <Text style={[styles.tooltipText, { color: '#A78BFA' }]}>
+                      {items[0]?.value} {WEIGHT_UNIT}
+                    </Text>
                     <Text style={styles.tooltipDate}>{items[0]?.label}</Text>
                   </View>
                 ),
@@ -559,8 +622,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 1,
-    marginBottom: 10,
+    marginBottom: 4,
     textTransform: 'uppercase',
+  },
+  chartSubtitle: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    marginBottom: 8,
   },
   chartContainer: {
     backgroundColor: colors.surface,
