@@ -94,21 +94,6 @@ function formatDuration(mins: number): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
-function rangeDaysToWeeks(days: RangeDays): number {
-  return Math.ceil(days / 7);
-}
-
-/** SQLite %W week number for a date (Monday-based). */
-function sqliteWeekNum(date: Date): number {
-  const year = date.getFullYear();
-  const startOfYear = new Date(year, 0, 1);
-  const startDay = startOfYear.getDay();
-  const daysToFirstMonday = startDay === 0 ? 1 : startDay === 1 ? 0 : 8 - startDay;
-  const firstMonday = new Date(year, 0, 1 + daysToFirstMonday);
-  if (date < firstMonday) return 0;
-  return Math.floor((date.getTime() - firstMonday.getTime()) / 86400000 / 7) + 1;
-}
-
 function getMondayOfWeek(date: Date): Date {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
@@ -118,31 +103,96 @@ function getMondayOfWeek(date: Date): Date {
   return d;
 }
 
-interface WeekBucket { key: string; label: string }
+// ─── Adaptive bucketing ───────────────────────────────────────────────────────
+// 30D → weekly (~4 buckets)
+// 90D → bi-weekly (~7 buckets)
+// 180D → monthly (6 buckets)
+// 365D → monthly (12 buckets)
+// This keeps all charts within ~12 bins so they never need horizontal scrolling.
 
-function buildWeekBuckets(weeks: number): WeekBucket[] {
+type BinType = 'weekly' | 'biweekly' | 'monthly';
+
+interface Bucket { key: string; label: string; startYmd: string; endYmd: string }
+
+function getBinType(rangeDays: RangeDays): BinType {
+  if (rangeDays <= 30) return 'weekly';
+  if (rangeDays <= 90) return 'biweekly';
+  return 'monthly';
+}
+
+function buildBuckets(rangeDays: RangeDays): Bucket[] {
   const today = new Date();
-  const result: WeekBucket[] = [];
-  for (let i = weeks - 1; i >= 0; i--) {
+  today.setHours(0, 0, 0, 0);
+  const todayYmd = toLocalDateYmd(today);
+  const binType = getBinType(rangeDays);
+
+  if (binType === 'monthly') {
+    const numMonths = rangeDays >= 300 ? 12 : 6;
+    const result: Bucket[] = [];
+    for (let i = numMonths - 1; i >= 0; i--) {
+      const first = new Date(today.getFullYear(), today.getMonth() - i, 1);
+      const last = new Date(today.getFullYear(), today.getMonth() - i + 1, 0);
+      const key = `${first.getFullYear()}-${String(first.getMonth() + 1).padStart(2, '0')}`;
+      const label = first.toLocaleString('default', { month: 'short' });
+      result.push({ key, label, startYmd: toLocalDateYmd(first), endYmd: toLocalDateYmd(last) });
+    }
+    return result;
+  }
+
+  if (binType === 'biweekly') {
+    const numBiweeks = Math.ceil(rangeDays / 14);
+    const result: Bucket[] = [];
+    for (let i = numBiweeks - 1; i >= 0; i--) {
+      const endD = new Date(today);
+      endD.setDate(today.getDate() - i * 14);
+      const startD = new Date(endD);
+      startD.setDate(endD.getDate() - 13);
+      const startYmd = toLocalDateYmd(startD);
+      const endYmd = i === 0 ? todayYmd : toLocalDateYmd(endD);
+      result.push({
+        key: startYmd,
+        label: `${startD.getMonth() + 1}/${startD.getDate()}`,
+        startYmd,
+        endYmd,
+      });
+    }
+    return result;
+  }
+
+  // Weekly
+  const numWeeks = Math.ceil(rangeDays / 7);
+  const result: Bucket[] = [];
+  for (let i = numWeeks - 1; i >= 0; i--) {
     const d = new Date(today);
-    d.setDate(d.getDate() - i * 7);
+    d.setDate(today.getDate() - i * 7);
     const monday = getMondayOfWeek(d);
-    const year = monday.getFullYear();
-    const weekNum = sqliteWeekNum(monday);
-    const key = `${year}-W${String(weekNum).padStart(2, '0')}`;
-    const label = `${monday.getMonth() + 1}/${monday.getDate()}`;
-    result.push({ key, label });
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    const startYmd = toLocalDateYmd(monday);
+    const endYmd = i === 0 ? todayYmd : toLocalDateYmd(sunday);
+    result.push({
+      key: startYmd,
+      label: `${monday.getMonth() + 1}/${monday.getDate()}`,
+      startYmd,
+      endYmd,
+    });
   }
   return result;
 }
 
-/** Map a YYYY-MM-DD string to the same week-bucket key that buildWeekBuckets produces. */
-function dateToWeekKey(ymd: string): string {
-  const d = new Date(`${ymd}T12:00:00`);
-  const monday = getMondayOfWeek(d);
-  const year = monday.getFullYear();
-  const weekNum = sqliteWeekNum(monday);
-  return `${year}-W${String(weekNum).padStart(2, '0')}`;
+/** Map a YYYY-MM-DD date string to the key of whichever bucket it falls into. */
+function dateToBucketKey(ymd: string, buckets: Bucket[]): string | null {
+  for (const b of buckets) {
+    if (ymd >= b.startYmd && ymd <= b.endYmd) return b.key;
+  }
+  return null;
+}
+
+/** Compute spacing so N line-chart points fit exactly within PLOT_WIDTH (no scroll). */
+function lineSpacingForN(n: number): number {
+  const usable = PLOT_WIDTH - 24; // 12px initialSpacing + 12px endSpacing
+  if (n <= 1) return usable;
+  return Math.max(8, usable / (n - 1));
 }
 
 /** Build a grid of [week][dayIndex 0=Mon..6=Sun] cells for the heatmap. */
@@ -173,14 +223,6 @@ function buildHeatmapGrid(workoutDates: Set<string>, days: number): HeatmapCell[
     weeks.push(week);
   }
   return weeks;
-}
-
-/** Only show an x-axis label every N bars to avoid clutter. */
-function labelEvery(weeks: number): number {
-  if (weeks <= 8) return 1;
-  if (weeks <= 16) return 2;
-  if (weeks <= 30) return 4;
-  return 8;
 }
 
 /**
@@ -341,34 +383,31 @@ export default function AnalyticsScreen() {
       // ── Average session duration for selected range ──
       setAvgDuration(getAvgSessionDurationMins(rangeDays));
 
-      // ── Weekly frequency & volume ──
-      const weeks = rangeDaysToWeeks(rangeDays);
-      const every = labelEvery(weeks);
-      const buckets = buildWeekBuckets(weeks);
+      // ── Frequency & volume — adaptive bin size ──
+      const buckets = buildBuckets(rangeDays);
 
-      // Bucket raw dates into week keys using the same JS logic as buildWeekBuckets
       const freqMap: Record<string, number> = {};
-      for (const d of getSessionDates(weeks)) {
-        const k = dateToWeekKey(d);
-        freqMap[k] = (freqMap[k] ?? 0) + 1;
+      for (const d of getSessionDates(rangeDays)) {
+        const k = dateToBucketKey(d, buckets);
+        if (k) freqMap[k] = (freqMap[k] ?? 0) + 1;
       }
       setWeeklyFreq(
-        buckets.map((b, i) => ({
+        buckets.map((b) => ({
           value: freqMap[b.key] ?? 0,
-          label: i % every === 0 ? b.label : '',
+          label: b.label,
           frontColor: colors.accent,
         }))
       );
 
       const volMap: Record<string, number> = {};
-      for (const row of getSessionVolumes(weeks)) {
-        const k = dateToWeekKey(row.date);
-        volMap[k] = (volMap[k] ?? 0) + row.volume;
+      for (const row of getSessionVolumes(rangeDays)) {
+        const k = dateToBucketKey(row.date, buckets);
+        if (k) volMap[k] = (volMap[k] ?? 0) + row.volume;
       }
       setWeeklyVol(
-        buckets.map((b, i) => ({
+        buckets.map((b) => ({
           value: volMap[b.key] ?? 0,
-          label: i % every === 0 ? b.label : '',
+          label: b.label,
           frontColor: colors.blue,
         }))
       );
@@ -389,22 +428,22 @@ export default function AnalyticsScreen() {
       const bwRows = getRecentBodyWeights(bwLimit).reverse();
       setBodyWeight(bwRows.map((r) => ({ value: r.weight_lbs, label: r.logged_date.slice(5) })));
 
-      // ── Volume vs body weight overlay (aligned by week bucket in JS) ──
-      const bwWeekMap: Record<string, { sum: number; count: number }> = {};
+      // ── Volume vs body weight overlay ──
+      const bwBucketMap: Record<string, { sum: number; count: number }> = {};
       for (const row of getBodyWeightEntries(rangeDays)) {
-        const k = dateToWeekKey(row.date);
-        const entry = bwWeekMap[k] ?? { sum: 0, count: 0 };
+        const k = dateToBucketKey(row.date, buckets);
+        if (!k) continue;
+        const entry = bwBucketMap[k] ?? { sum: 0, count: 0 };
         entry.sum += row.lbs;
         entry.count += 1;
-        bwWeekMap[k] = entry;
+        bwBucketMap[k] = entry;
       }
       const volPoints: { value: number; label: string }[] = [];
       const bwPoints: { value: number; label: string }[] = [];
-      buckets.forEach((b, i) => {
-        const label = i % every === 0 ? b.label : '';
-        volPoints.push({ value: volMap[b.key] ?? 0, label });
-        const bwEntry = bwWeekMap[b.key];
-        bwPoints.push({ value: bwEntry ? Math.round(bwEntry.sum / bwEntry.count) : 0, label });
+      buckets.forEach((b) => {
+        volPoints.push({ value: volMap[b.key] ?? 0, label: b.label });
+        const bwEntry = bwBucketMap[b.key];
+        bwPoints.push({ value: bwEntry ? Math.round(bwEntry.sum / bwEntry.count) : 0, label: b.label });
       });
       setVolBodyWeightData({ volPoints, bwPoints });
 
@@ -442,6 +481,12 @@ export default function AnalyticsScreen() {
   const has1RMTrends = topExercise1RMs.length > 0;
 
   const rangeLabel = RANGES.find((r) => r.days === rangeDays)?.label ?? '';
+  const binLabel = (() => {
+    const t = getBinType(rangeDays);
+    if (t === 'monthly') return 'monthly';
+    if (t === 'biweekly') return 'bi-weekly';
+    return 'weekly';
+  })();
 
   return (
     <ScrollView
@@ -504,11 +549,11 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
-      {/* Weekly Training Frequency */}
+      {/* Training Frequency */}
       {hasWeeklyData && (
         <CollapsibleSection
-          title="Weekly Frequency"
-          subtitle={`Sessions per week — last ${rangeDays} days`}
+          title="Training Frequency"
+          subtitle={`Sessions per ${binLabel === 'bi-weekly' ? '2 weeks' : binLabel.replace('ly', '')} — last ${rangeDays} days`}
         >
           <View style={styles.chartCard}>
             <BarChart
@@ -533,11 +578,11 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
-      {/* Weekly Volume Trend */}
+      {/* Volume Trend */}
       {hasWeeklyData && (
         <CollapsibleSection
-          title="Weekly Volume"
-          subtitle={`Total ${WEIGHT_UNIT} lifted per week — last ${rangeDays} days`}
+          title="Volume Trend"
+          subtitle={`Total ${WEIGHT_UNIT} lifted per ${binLabel === 'bi-weekly' ? '2 weeks' : binLabel.replace('ly', '')} — last ${rangeDays} days`}
         >
           <View style={styles.chartCard}>
             <BarChart
@@ -615,8 +660,9 @@ export default function AnalyticsScreen() {
               rulesType="dashed"
               backgroundColor={colors.surface}
               noOfSections={4}
-              initialSpacing={16}
-              endSpacing={16}
+              spacing={lineSpacingForN(bodyWeight.length)}
+              initialSpacing={12}
+              endSpacing={12}
               hideDataPoints={bodyWeight.length > 20}
               pointerConfig={{
                 pointerStripColor: colors.orange,
@@ -641,56 +687,81 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
-      {/* Volume vs Body Weight Overlay */}
+      {/* Volume vs Body Weight — two stacked charts */}
       {hasAnyData && (
         <CollapsibleSection
           title="Volume vs Body Weight"
-          subtitle={`Weekly comparison — last ${rangeDays} days`}
+          subtitle={`${binLabel.charAt(0).toUpperCase() + binLabel.slice(1)} — last ${rangeDays} days`}
         >
-          <View style={styles.overlayLegend}>
-            <View style={[styles.overlayDot, { backgroundColor: colors.blue }]} />
-            <Text style={styles.overlayLegendText}>Volume</Text>
-            <View style={[styles.overlayDot, { backgroundColor: colors.orange, marginLeft: 12 }]} />
-            <Text style={styles.overlayLegendText}>Body weight</Text>
-          </View>
-          <View style={styles.chartCard}>
+          {/* Weekly Volume */}
+          <Text style={styles.overlayChartLabel}>
+            Weekly Volume ({WEIGHT_UNIT})
+          </Text>
+          <View style={[styles.chartCard, { marginBottom: 10 }]}>
             {volBodyWeightData.volPoints.length > 0 ? (
               <LineChart
                 data={volBodyWeightData.volPoints}
-                {...(hasOverlayBW
-                  ? {
-                      data2: volBodyWeightData.bwPoints,
-                      color2: colors.orange,
-                      dataPointsColor2: colors.orange,
-                      secondaryYAxis: {
-                        noOfSections: 4,
-                        yAxisTextStyle: { color: colors.orange, fontSize: 9 },
-                      },
-                    }
-                  : {})}
                 width={PLOT_WIDTH}
-                height={160}
-                color1={colors.blue}
+                height={130}
+                spacing={lineSpacingForN(volBodyWeightData.volPoints.length)}
+                initialSpacing={12}
+                endSpacing={12}
+                color={colors.blue}
                 thickness={2}
-                dataPointsColor1={colors.blue}
+                dataPointsColor={colors.blue}
                 dataPointsRadius={3}
                 xAxisColor={colors.border}
                 yAxisColor={colors.border}
-                yAxisTextStyle={{ color: colors.blue, fontSize: 9 }}
+                yAxisTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
                 yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
                 xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
                 rulesColor={colors.border}
                 rulesType="dashed"
                 backgroundColor={colors.surface}
-                noOfSections={4}
-                initialSpacing={12}
-                endSpacing={12}
+                noOfSections={3}
                 hideDataPoints={volBodyWeightData.volPoints.length > 20}
                 formatYLabel={(v) => formatVolume(Number(v))}
               />
             ) : (
               <View style={styles.chartPlaceholder}>
-                <Text style={styles.chartPlaceholderText}>No data yet</Text>
+                <Text style={styles.chartPlaceholderText}>No volume data yet</Text>
+              </View>
+            )}
+          </View>
+
+          {/* Weekly Body Weight */}
+          <Text style={styles.overlayChartLabel}>
+            Avg Body Weight ({WEIGHT_UNIT})
+          </Text>
+          <View style={styles.chartCard}>
+            {hasOverlayBW ? (
+              <LineChart
+                data={volBodyWeightData.bwPoints}
+                width={PLOT_WIDTH}
+                height={130}
+                spacing={lineSpacingForN(volBodyWeightData.bwPoints.length)}
+                initialSpacing={12}
+                endSpacing={12}
+                color={colors.orange}
+                thickness={2}
+                dataPointsColor={colors.orange}
+                dataPointsRadius={3}
+                xAxisColor={colors.border}
+                yAxisColor={colors.border}
+                yAxisTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
+                yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
+                xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
+                rulesColor={colors.border}
+                rulesType="dashed"
+                backgroundColor={colors.surface}
+                noOfSections={3}
+                hideDataPoints={volBodyWeightData.bwPoints.length > 20}
+              />
+            ) : (
+              <View style={styles.chartPlaceholder}>
+                <Text style={styles.chartPlaceholderText}>
+                  Log body weight after workouts to see this chart
+                </Text>
               </View>
             )}
           </View>
@@ -725,8 +796,9 @@ export default function AnalyticsScreen() {
                   rulesType="dashed"
                   backgroundColor={colors.surface}
                   noOfSections={3}
-                  initialSpacing={16}
-                  endSpacing={16}
+                  spacing={lineSpacingForN(ex.data.length)}
+                  initialSpacing={12}
+                  endSpacing={12}
                   hideDataPoints={ex.data.length > 15}
                 />
               </View>
@@ -994,15 +1066,15 @@ const styles = StyleSheet.create({
   tooltipValue: { fontSize: 13, fontWeight: '700' },
   tooltipDate: { color: colors.textTertiary, fontSize: 10 },
 
-  // Volume vs body weight overlay legend
-  overlayLegend: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
+  overlayChartLabel: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginBottom: 6,
     paddingHorizontal: 2,
   },
-  overlayDot: { width: 10, height: 10, borderRadius: 5 },
-  overlayLegendText: { color: colors.textSecondary, fontSize: 12, marginLeft: 4 },
 
   // 1RM Trends
   trendBlock: { marginBottom: 16 },

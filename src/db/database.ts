@@ -663,7 +663,7 @@ export function getLifetimeStats() {
   };
 }
 
-export function getSessionDates(weeks = 12): string[] {
+export function getSessionDates(days = 90): string[] {
   const db = getDb();
   const rows = db.getAllSync<{ d: string }>(
     `SELECT date(datetime(completed_at, 'localtime')) as d
@@ -671,12 +671,12 @@ export function getSessionDates(weeks = 12): string[] {
      WHERE completed_at IS NOT NULL
        AND completed_at >= date('now', ?)
      ORDER BY d ASC`,
-    [`-${weeks * 7} days`]
+    [`-${days} days`]
   );
   return rows.map((r) => r.d);
 }
 
-export function getSessionVolumes(weeks = 12): { date: string; volume: number }[] {
+export function getSessionVolumes(days = 90): { date: string; volume: number }[] {
   const db = getDb();
   return db.getAllSync<{ date: string; volume: number }>(
     `SELECT date(datetime(ws.completed_at, 'localtime')) as date,
@@ -689,7 +689,7 @@ export function getSessionVolumes(weeks = 12): { date: string; volume: number }[
        AND sl.reps > 0
      GROUP BY date
      ORDER BY date ASC`,
-    [`-${weeks * 7} days`]
+    [`-${days} days`]
   );
 }
 
