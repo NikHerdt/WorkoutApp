@@ -1,6 +1,8 @@
 import * as SQLite from 'expo-sqlite';
 import { resolveAliasToCanonicalExerciseName } from '../data/programExerciseNameAliases';
 import { SEED_DATA } from './seed';
+import { toLocalDateYmd } from '../utils/dateLocal';
+
 
 let db: SQLite.SQLiteDatabase;
 
@@ -472,7 +474,7 @@ export function getSessionsByDateRange(startDate: string, endDate: string) {
      FROM workout_sessions s
      JOIN workouts w ON s.workout_id = w.id
      WHERE s.completed_at IS NOT NULL
-       AND date(s.completed_at) >= ? AND date(s.completed_at) <= ?
+       AND date(datetime(s.completed_at, 'localtime')) >= ? AND date(datetime(s.completed_at, 'localtime')) <= ?
      ORDER BY s.completed_at DESC`,
     [startDate, endDate]
   );
@@ -540,14 +542,14 @@ export function getLastSessionSetsForExercise(exerciseId: number) {
 export function getExerciseVolumeHistory(exerciseId: number) {
   return getDb().getAllSync<{ date: string; total_volume: number; max_weight: number; total_reps: number }>(
     `SELECT
-       date(ws.completed_at) as date,
+       date(datetime(ws.completed_at, 'localtime')) as date,
        SUM(sl.weight * sl.reps) as total_volume,
        MAX(sl.weight) as max_weight,
        SUM(sl.reps) as total_reps
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
      WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'
-     GROUP BY date(ws.completed_at)
+     GROUP BY date(datetime(ws.completed_at, 'localtime'))
      ORDER BY date ASC
      LIMIT 30`,
     [exerciseId]
@@ -557,13 +559,13 @@ export function getExerciseVolumeHistory(exerciseId: number) {
 export function getExerciseWeightHistory(exerciseId: number) {
   return getDb().getAllSync<{ date: string; max_weight: number; avg_weight: number }>(
     `SELECT
-       date(ws.completed_at) as date,
+       date(datetime(ws.completed_at, 'localtime')) as date,
        MAX(sl.weight) as max_weight,
        AVG(sl.weight) as avg_weight
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
      WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'
-     GROUP BY date(ws.completed_at)
+     GROUP BY date(datetime(ws.completed_at, 'localtime'))
      ORDER BY date ASC
      LIMIT 30`,
     [exerciseId]
@@ -572,7 +574,7 @@ export function getExerciseWeightHistory(exerciseId: number) {
 
 export function getExercisePR(exerciseId: number) {
   return getDb().getFirstSync<{ max_weight: number; reps: number; date: string }>(
-    `SELECT sl.weight as max_weight, sl.reps, date(ws.completed_at) as date
+    `SELECT sl.weight as max_weight, sl.reps, date(datetime(ws.completed_at, 'localtime')) as date
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
      WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'
@@ -593,8 +595,8 @@ export function getLifetimeStats() {
      JOIN workout_sessions ws ON sl.session_id = ws.id
      WHERE ws.completed_at IS NOT NULL AND sl.set_type = 'working'`
   );
-  const allDates = db.getAllSync<{ d: string }>(
-    `SELECT DISTINCT date(completed_at) as d
+  const completedByDate = db.getAllSync<{ d: string }>(
+    `SELECT DISTINCT date(datetime(completed_at, 'localtime')) as d
      FROM workout_sessions
      WHERE completed_at IS NOT NULL
      ORDER BY d ASC`
@@ -602,38 +604,45 @@ export function getLifetimeStats() {
 
   let currentStreak = 0;
   let longestStreak = 0;
-  if (allDates.length > 0) {
-    const dateSet = new Set(allDates.map((r) => r.d));
+  if (completedByDate.length > 0) {
+    const sortedDates = completedByDate.map((r) => r.d); // already distinct + sorted from SQL
+    const workoutDateSet = new Set<string>(sortedDates);
+
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    today.setHours(12, 0, 0, 0);
 
-    let streak = 0;
-    let cursor = new Date(today);
-    while (true) {
-      const ymd = cursor.toISOString().slice(0, 10);
-      if (dateSet.has(ymd)) {
-        streak++;
-        cursor.setDate(cursor.getDate() - 1);
+    // Current streak: walk backwards from today, counting workout days.
+    // One consecutive rest-day gap is allowed (the program has at most 1 rest day
+    // between workout blocks), so the streak only breaks after 2+ empty days.
+    const cursor = new Date(today);
+    let gap = 0;
+    while (toLocalDateYmd(cursor) >= sortedDates[0]) {
+      const ymd = toLocalDateYmd(cursor);
+      if (workoutDateSet.has(ymd)) {
+        currentStreak++;
+        gap = 0;
       } else {
-        break;
+        gap++;
+        if (gap > 1) break;
+      }
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
+    // Longest streak: walk through sorted workout dates; a gap of ≤2 calendar
+    // days between consecutive workouts counts as unbroken (1 rest day allowed).
+    if (sortedDates.length === 1) {
+      longestStreak = 1;
+    } else {
+      let run = 1;
+      longestStreak = 1;
+      for (let i = 1; i < sortedDates.length; i++) {
+        const prev = new Date(`${sortedDates[i - 1]}T12:00:00`);
+        const curr = new Date(`${sortedDates[i]}T12:00:00`);
+        const dayGap = Math.round((curr.getTime() - prev.getTime()) / 86400000);
+        run = dayGap <= 2 ? run + 1 : 1;
+        if (run > longestStreak) longestStreak = run;
       }
     }
-    currentStreak = streak;
-
-    let best = 1;
-    let run = 1;
-    for (let i = 1; i < allDates.length; i++) {
-      const prev = new Date(allDates[i - 1].d);
-      const curr = new Date(allDates[i].d);
-      const diff = (curr.getTime() - prev.getTime()) / 86400000;
-      if (diff === 1) {
-        run++;
-        if (run > best) best = run;
-      } else {
-        run = 1;
-      }
-    }
-    longestStreak = best;
   }
 
   return {
@@ -647,7 +656,7 @@ export function getLifetimeStats() {
 export function getWeeklySessionCounts(weeks = 12) {
   const db = getDb();
   const rows = db.getAllSync<{ week: string; count: number }>(
-    `SELECT strftime('%Y-W%W', completed_at) as week, COUNT(*) as count
+    `SELECT strftime('%Y-W%W', datetime(completed_at, 'localtime')) as week, COUNT(*) as count
      FROM workout_sessions
      WHERE completed_at IS NOT NULL
        AND completed_at >= date('now', ?)
@@ -661,7 +670,7 @@ export function getWeeklySessionCounts(weeks = 12) {
 export function getWeeklyVolumeTotals(weeks = 12) {
   const db = getDb();
   const rows = db.getAllSync<{ week: string; total_volume: number }>(
-    `SELECT strftime('%Y-W%W', ws.completed_at) as week,
+    `SELECT strftime('%Y-W%W', datetime(ws.completed_at, 'localtime')) as week,
             SUM(sl.weight * sl.reps) as total_volume
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
@@ -695,7 +704,7 @@ export function getMuscleGroupVolume(days = 30) {
   return rows;
 }
 
-export function getRecentPRs(limit = 10) {
+export function getRecentPRs(limit = 10, days = 60) {
   const db = getDb();
   return db.getAllSync<{
     exercise_name: string;
@@ -707,13 +716,13 @@ export function getRecentPRs(limit = 10) {
     `SELECT e.name as exercise_name,
             sl.weight as max_weight,
             sl.reps,
-            date(ws.completed_at) as date,
+            date(datetime(ws.completed_at, 'localtime')) as date,
             ROUND(sl.weight * (1.0 + sl.reps / 30.0), 1) as estimated_1rm
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
      JOIN exercises e ON sl.exercise_id = e.id
      WHERE ws.completed_at IS NOT NULL
-       AND ws.completed_at >= date('now', '-60 days')
+       AND ws.completed_at >= date('now', ?)
        AND sl.set_type = 'working'
        AND sl.weight > 0
        AND sl.reps > 0
@@ -721,13 +730,14 @@ export function getRecentPRs(limit = 10) {
      HAVING sl.weight = MAX(sl.weight)
      ORDER BY ws.completed_at DESC
      LIMIT ?`,
-    [limit]
+    [`-${days} days`, limit]
   );
 }
 
 export function getTop1RMs(limit = 15) {
   const db = getDb();
   return db.getAllSync<{
+    exercise_id: number;
     exercise_name: string;
     best_weight: number;
     best_reps: number;
@@ -735,11 +745,12 @@ export function getTop1RMs(limit = 15) {
     last_date: string;
   }>(
     `SELECT
+       e.id AS exercise_id,
        e.name AS exercise_name,
        sl.weight AS best_weight,
        sl.reps AS best_reps,
        ROUND(sl.weight * (1.0 + sl.reps / 30.0), 1) AS estimated_1rm,
-       date(MAX(ws.completed_at)) AS last_date
+       date(datetime(MAX(ws.completed_at), 'localtime')) AS last_date
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
      JOIN exercises e ON sl.exercise_id = e.id
@@ -759,7 +770,7 @@ export function getEstimated1RMHistory(exerciseId: number) {
   const db = getDb();
   return db.getAllSync<{ date: string; estimated_1rm: number; weight: number; reps: number }>(
     `SELECT
-       date(ws.completed_at) as date,
+       date(datetime(ws.completed_at, 'localtime')) as date,
        ROUND(MAX(sl.weight * (1.0 + sl.reps / 30.0)), 1) as estimated_1rm,
        sl.weight,
        sl.reps
@@ -767,9 +778,71 @@ export function getEstimated1RMHistory(exerciseId: number) {
      JOIN workout_sessions ws ON sl.session_id = ws.id
      WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'
        AND sl.reps > 0 AND sl.weight > 0
-     GROUP BY date(ws.completed_at)
+     GROUP BY date(datetime(ws.completed_at, 'localtime'))
      ORDER BY date ASC
      LIMIT 30`,
     [exerciseId]
+  );
+}
+
+/** Estimated 1RM per session for a single exercise within a day range. */
+export function get1RMHistoryInRange(
+  exerciseId: number,
+  days: number
+): { date: string; estimated_1rm: number }[] {
+  return getDb().getAllSync<{ date: string; estimated_1rm: number }>(
+    `SELECT
+       date(datetime(ws.completed_at, 'localtime')) as date,
+       ROUND(MAX(sl.weight * (1.0 + sl.reps / 30.0)), 1) as estimated_1rm
+     FROM set_logs sl
+     JOIN workout_sessions ws ON sl.session_id = ws.id
+     WHERE sl.exercise_id = ?
+       AND ws.completed_at IS NOT NULL
+       AND ws.completed_at >= date('now', ?)
+       AND sl.set_type = 'working'
+       AND sl.reps > 0 AND sl.weight > 0
+     GROUP BY date(datetime(ws.completed_at, 'localtime'))
+     ORDER BY date ASC`,
+    [exerciseId, `-${days} days`]
+  );
+}
+
+/** All distinct workout dates within the range (YYYY-MM-DD). */
+export function getWorkoutDatesInRange(days: number): string[] {
+  const rows = getDb().getAllSync<{ d: string }>(
+    `SELECT DISTINCT date(datetime(completed_at, 'localtime')) as d
+     FROM workout_sessions
+     WHERE completed_at IS NOT NULL
+       AND completed_at >= date('now', ?)
+     ORDER BY d ASC`,
+    [`-${days} days`]
+  );
+  return rows.map((r) => r.d);
+}
+
+/** Average completed session duration in minutes within the range. */
+export function getAvgSessionDurationMins(days: number): number {
+  const row = getDb().getFirstSync<{ avg_mins: number | null }>(
+    `SELECT AVG((julianday(completed_at) - julianday(started_at)) * 1440) as avg_mins
+     FROM workout_sessions
+     WHERE completed_at IS NOT NULL
+       AND started_at IS NOT NULL
+       AND completed_at >= date('now', ?)`,
+    [`-${days} days`]
+  );
+  return Math.round(row?.avg_mins ?? 0);
+}
+
+/** Weekly body-weight averages aligned to week buckets (same key format as getWeeklyVolumeTotals). */
+export function getWeeklyBodyWeightForRange(days: number): { week: string; avg_lbs: number }[] {
+  return getDb().getAllSync<{ week: string; avg_lbs: number }>(
+    `SELECT
+       strftime('%Y-W%W', logged_date) as week,
+       AVG(weight_lbs) as avg_lbs
+     FROM body_weight_log
+     WHERE logged_date >= date('now', ?)
+     GROUP BY week
+     ORDER BY week ASC`,
+    [`-${days} days`]
   );
 }

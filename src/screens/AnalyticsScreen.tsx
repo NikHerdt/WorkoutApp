@@ -11,6 +11,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { BarChart, LineChart } from 'react-native-gifted-charts';
 import { colors } from '../theme/colors';
 import { WEIGHT_UNIT } from '../constants/weightUnits';
+import { toLocalDateYmd } from '../utils/dateLocal';
 import {
   getLifetimeStats,
   getWeeklySessionCounts,
@@ -19,10 +20,46 @@ import {
   getRecentPRs,
   getRecentBodyWeights,
   getTop1RMs,
+  getWorkoutDatesInRange,
+  getAvgSessionDurationMins,
+  get1RMHistoryInRange,
+  getWeeklyBodyWeightForRange,
 } from '../db/database';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_WIDTH = SCREEN_WIDTH - 64;
+
+// gifted-charts renders y-axis labels OUTSIDE the `width` prop, so we must
+// reserve space for them or the rightmost bars get clipped.
+const Y_AXIS_LABEL_WIDTH = 40;
+// The actual plot area passed to BarChart / LineChart.
+const PLOT_WIDTH = CHART_WIDTH - Y_AXIS_LABEL_WIDTH;
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type RangeDays = 30 | 90 | 180 | 365;
+
+const RANGES: { label: string; days: RangeDays }[] = [
+  { label: '30D', days: 30 },
+  { label: '90D', days: 90 },
+  { label: '6M', days: 180 },
+  { label: '1Y', days: 365 },
+];
+
+interface LifetimeStats {
+  totalSessions: number;
+  totalVolume: number;
+  currentStreak: number;
+  longestStreak: number;
+}
+
+interface HeatmapCell {
+  date: string;
+  hasWorkout: boolean;
+  isFuture: boolean;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const MUSCLE_COLORS: Record<string, string> = {
   chest: colors.orange,
@@ -42,8 +79,7 @@ const MUSCLE_COLORS: Record<string, string> = {
 };
 
 function muscleColor(name: string): string {
-  const key = name.toLowerCase();
-  return MUSCLE_COLORS[key] ?? colors.accent;
+  return MUSCLE_COLORS[name.toLowerCase()] ?? colors.accent;
 }
 
 function formatVolume(v: number): string {
@@ -52,10 +88,17 @@ function formatVolume(v: number): string {
   return String(Math.round(v));
 }
 
-/**
- * Generates the SQLite %W-compatible week number for a given date.
- * SQLite %W: week starts Monday, week 00 is days before first Monday.
- */
+function formatDuration(mins: number): string {
+  if (mins <= 0) return '--';
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+function rangeDaysToWeeks(days: RangeDays): number {
+  return Math.ceil(days / 7);
+}
+
+/** SQLite %W week number for a date (Monday-based). */
 function sqliteWeekNum(date: Date): number {
   const year = date.getFullYear();
   const startOfYear = new Date(year, 0, 1);
@@ -75,10 +118,7 @@ function getMondayOfWeek(date: Date): Date {
   return d;
 }
 
-interface WeekBucket {
-  key: string;
-  label: string;
-}
+interface WeekBucket { key: string; label: string }
 
 function buildWeekBuckets(weeks: number): WeekBucket[] {
   const today = new Date();
@@ -96,12 +136,57 @@ function buildWeekBuckets(weeks: number): WeekBucket[] {
   return result;
 }
 
-interface LifetimeStats {
-  totalSessions: number;
-  totalVolume: number;
-  currentStreak: number;
-  longestStreak: number;
+/** Build a grid of [week][dayIndex 0=Mon..6=Sun] cells for the heatmap. */
+function buildHeatmapGrid(workoutDates: Set<string>, days: number): HeatmapCell[][] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = toLocalDateYmd(today);
+
+  // Start from the Monday of the week that contains (today - days + 1)
+  const startDate = new Date(today);
+  startDate.setDate(today.getDate() - days + 1);
+  const startDow = startDate.getDay();
+  startDate.setDate(startDate.getDate() + (startDow === 0 ? -6 : 1 - startDow));
+
+  const weeks: HeatmapCell[][] = [];
+  const cursor = new Date(startDate);
+  while (cursor <= today) {
+    const week: HeatmapCell[] = [];
+    for (let d = 0; d < 7; d++) {
+      const date = toLocalDateYmd(cursor);
+      week.push({
+        date,
+        hasWorkout: workoutDates.has(date),
+        isFuture: date > todayStr,
+      });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    weeks.push(week);
+  }
+  return weeks;
 }
+
+/** Only show an x-axis label every N bars to avoid clutter. */
+function labelEvery(weeks: number): number {
+  if (weeks <= 8) return 1;
+  if (weeks <= 16) return 2;
+  if (weeks <= 30) return 4;
+  return 8;
+}
+
+/**
+ * Compute bar width so all N bars fit exactly inside PLOT_WIDTH.
+ * gifted-charts packs bars with ~3 px of implicit spacing between them, so
+ * we solve: N * (barW + 3) + initialSpacing + endSpacing = PLOT_WIDTH
+ */
+function barWidthForN(numBars: number): number {
+  const spacing = 16; // initialSpacing + endSpacing
+  const available = PLOT_WIDTH - spacing;
+  const bw = Math.floor(available / numBars) - 3;
+  return Math.max(2, Math.min(28, bw));
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
 
 function CollapsibleSection({
   title,
@@ -138,49 +223,142 @@ function CollapsibleSection({
   );
 }
 
+function StatCard({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) {
+  return (
+    <View style={[styles.statCard, highlight && styles.statCardHighlight]}>
+      <Text style={[styles.statValue, highlight && styles.statValueHighlight]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+const HEATMAP_GAP = 2;
+const DAY_LABELS = ['M', '', 'W', '', 'F', '', ''];
+// card horizontal padding (14) × 2 + day-label column (10) + gap (2)
+const HEATMAP_OVERHEAD = 14 * 2 + 12;
+
+function heatmapCellSize(numWeeks: number): number {
+  const available = SCREEN_WIDTH - 32 - HEATMAP_OVERHEAD; // 32 = screen content padding
+  const size = Math.floor((available - numWeeks * HEATMAP_GAP) / numWeeks);
+  return Math.max(4, Math.min(13, size));
+}
+
+function WorkoutHeatmap({ grid }: { grid: HeatmapCell[][] }) {
+  if (grid.length === 0) return null;
+  const cellSize = heatmapCellSize(grid.length);
+  return (
+    <View style={styles.heatmapScroll}>
+      <View style={styles.heatmapContainer}>
+        {/* Day-of-week labels */}
+        <View style={[styles.heatmapDayLabels, { gap: HEATMAP_GAP }]}>
+          {DAY_LABELS.map((label, i) => (
+            <Text
+              key={i}
+              style={[styles.heatmapDayLabel, { height: cellSize, lineHeight: cellSize }]}
+            >
+              {label}
+            </Text>
+          ))}
+        </View>
+        {/* Week columns */}
+        {grid.map((week, wi) => (
+          <View key={wi} style={[styles.heatmapWeek, { gap: HEATMAP_GAP }]}>
+            {week.map((cell, di) => (
+              <View
+                key={di}
+                style={[
+                  styles.heatmapCell,
+                  { width: cellSize, height: cellSize },
+                  cell.isFuture && styles.heatmapCellFuture,
+                  cell.hasWorkout && styles.heatmapCellActive,
+                ]}
+              />
+            ))}
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+
 export default function AnalyticsScreen() {
+  const [rangeDays, setRangeDays] = useState<RangeDays>(90);
+
+  // ── Lifetime (always all-time) ──
   const [stats, setStats] = useState<LifetimeStats>({
     totalSessions: 0,
     totalVolume: 0,
     currentStreak: 0,
     longestStreak: 0,
   });
+  const [hasAnyData, setHasAnyData] = useState(false);
+
+  // ── Range-dependent state ──
+  const [avgDuration, setAvgDuration] = useState(0);
   const [weeklyFreq, setWeeklyFreq] = useState<{ value: number; label: string; frontColor: string }[]>([]);
   const [weeklyVol, setWeeklyVol] = useState<{ value: number; label: string; frontColor: string }[]>([]);
   const [muscleVolume, setMuscleVolume] = useState<{ name: string; volume: number; pct: number }[]>([]);
   const [bodyWeight, setBodyWeight] = useState<{ value: number; label: string }[]>([]);
+  const [volBodyWeightData, setVolBodyWeightData] = useState<{
+    volPoints: { value: number; label: string }[];
+    bwPoints: { value: number; label: string }[];
+  }>({ volPoints: [], bwPoints: [] });
   const [recentPRs, setRecentPRs] = useState<any[]>([]);
   const [top1RMs, setTop1RMs] = useState<any[]>([]);
-  const [hasAnyData, setHasAnyData] = useState(false);
+  const [heatmapGrid, setHeatmapGrid] = useState<HeatmapCell[][]>([]);
+  const [topExercise1RMs, setTopExercise1RMs] = useState<
+    { name: string; data: { value: number; label: string }[]; color: string }[]
+  >([]);
+
+  const TREND_COLORS = [colors.accent, colors.orange, '#A78BFA'];
 
   useFocusEffect(
     useCallback(() => {
+      // ── Lifetime stats (range-independent) ──
       const lifetime = getLifetimeStats();
       setStats(lifetime);
       setHasAnyData(lifetime.totalSessions > 0);
 
-      const buckets = buildWeekBuckets(12);
+      // ── Average session duration for selected range ──
+      setAvgDuration(getAvgSessionDurationMins(rangeDays));
+
+      // ── Weekly frequency & volume ──
+      const weeks = rangeDaysToWeeks(rangeDays);
+      const every = labelEvery(weeks);
+      const buckets = buildWeekBuckets(weeks);
+
       const freqMap: Record<string, number> = {};
-      for (const row of getWeeklySessionCounts(12)) freqMap[row.week] = row.count;
+      for (const row of getWeeklySessionCounts(weeks)) freqMap[row.week] = row.count;
       setWeeklyFreq(
-        buckets.map((b) => ({
+        buckets.map((b, i) => ({
           value: freqMap[b.key] ?? 0,
-          label: b.label,
+          label: i % every === 0 ? b.label : '',
           frontColor: colors.accent,
         }))
       );
 
       const volMap: Record<string, number> = {};
-      for (const row of getWeeklyVolumeTotals(12)) volMap[row.week] = row.total_volume;
+      for (const row of getWeeklyVolumeTotals(weeks)) volMap[row.week] = row.total_volume;
       setWeeklyVol(
-        buckets.map((b) => ({
+        buckets.map((b, i) => ({
           value: volMap[b.key] ?? 0,
-          label: b.label,
+          label: i % every === 0 ? b.label : '',
           frontColor: colors.blue,
         }))
       );
 
-      const mgRows = getMuscleGroupVolume(30);
+      // ── Muscle group volume ──
+      const mgRows = getMuscleGroupVolume(rangeDays);
       const maxVol = mgRows.length > 0 ? mgRows[0].total_volume : 1;
       setMuscleVolume(
         mgRows.map((r) => ({
@@ -190,17 +368,45 @@ export default function AnalyticsScreen() {
         }))
       );
 
-      const bwRows = getRecentBodyWeights(30).reverse();
-      setBodyWeight(
-        bwRows.map((r) => ({
-          value: r.weight_lbs,
-          label: r.logged_date.slice(5),
-        }))
-      );
+      // ── Body weight (up to the number of entries in range) ──
+      const bwLimit = Math.min(rangeDays, 60);
+      const bwRows = getRecentBodyWeights(bwLimit).reverse();
+      setBodyWeight(bwRows.map((r) => ({ value: r.weight_lbs, label: r.logged_date.slice(5) })));
 
-      setRecentPRs(getRecentPRs(10));
+      // ── Volume vs body weight overlay (aligned by week bucket) ──
+      const bwWeekMap: Record<string, number> = {};
+      for (const row of getWeeklyBodyWeightForRange(rangeDays)) bwWeekMap[row.week] = row.avg_lbs;
+      const volPoints: { value: number; label: string }[] = [];
+      const bwPoints: { value: number; label: string }[] = [];
+      buckets.forEach((b, i) => {
+        const label = i % every === 0 ? b.label : '';
+        volPoints.push({ value: volMap[b.key] ?? 0, label });
+        bwPoints.push({ value: bwWeekMap[b.key] ?? 0, label });
+      });
+      setVolBodyWeightData({ volPoints, bwPoints });
+
+      // ── Recent PRs (range-aware) ──
+      setRecentPRs(getRecentPRs(10, rangeDays));
+
+      // ── All-time strength overview ──
       setTop1RMs(getTop1RMs(15));
-    }, [])
+
+      // ── Heatmap ──
+      const workoutDates = new Set(getWorkoutDatesInRange(rangeDays));
+      setHeatmapGrid(buildHeatmapGrid(workoutDates, rangeDays));
+
+      // ── Top-3 exercise 1RM trends ──
+      const top3 = getTop1RMs(3);
+      const trends = top3.map((ex, idx) => {
+        const history = get1RMHistoryInRange(ex.exercise_id, rangeDays);
+        const data = history.map((h, hi) => ({
+          value: h.estimated_1rm,
+          label: hi === 0 || hi === history.length - 1 ? h.date.slice(5) : '',
+        }));
+        return { name: ex.exercise_name, data, color: TREND_COLORS[idx] ?? colors.accent };
+      });
+      setTopExercise1RMs(trends.filter((t) => t.data.length > 1));
+    }, [rangeDays])
   );
 
   const hasWeeklyData = weeklyFreq.some((d) => d.value > 0);
@@ -208,6 +414,11 @@ export default function AnalyticsScreen() {
   const hasBodyWeight = bodyWeight.length > 0;
   const hasPRs = recentPRs.length > 0;
   const has1RMs = top1RMs.length > 0;
+  const hasHeatmap = heatmapGrid.some((w) => w.some((c) => c.hasWorkout));
+  const hasOverlayBW = volBodyWeightData.bwPoints.some((p) => p.value > 0);
+  const has1RMTrends = topExercise1RMs.length > 0;
+
+  const rangeLabel = RANGES.find((r) => r.days === rangeDays)?.label ?? '';
 
   return (
     <ScrollView
@@ -215,13 +426,14 @@ export default function AnalyticsScreen() {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      {/* Lifetime Stats — always visible, not collapsible */}
+      {/* Lifetime Stats — always all-time, not collapsible */}
       <Text style={styles.sectionTitle}>Lifetime</Text>
       <View style={styles.statsGrid}>
         <StatCard label="Sessions" value={String(stats.totalSessions)} />
         <StatCard label={`Volume (${WEIGHT_UNIT})`} value={formatVolume(stats.totalVolume)} />
         <StatCard label="Current Streak" value={`${stats.currentStreak}d`} highlight />
         <StatCard label="Best Streak" value={`${stats.longestStreak}d`} />
+        <StatCard label={`Avg Duration (${rangeLabel})`} value={formatDuration(avgDuration)} />
       </View>
 
       {!hasAnyData && (
@@ -233,18 +445,55 @@ export default function AnalyticsScreen() {
         </View>
       )}
 
+      {/* Range Selector */}
+      {hasAnyData && (
+        <View style={styles.rangeRow}>
+          {RANGES.map((r) => (
+            <TouchableOpacity
+              key={r.days}
+              style={[styles.rangeBtn, rangeDays === r.days && styles.rangeBtnActive]}
+              onPress={() => setRangeDays(r.days)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.rangeBtnText, rangeDays === r.days && styles.rangeBtnTextActive]}>
+                {r.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {/* Workout Heatmap */}
+      {hasHeatmap && (
+        <CollapsibleSection
+          title="Workout Heatmap"
+          subtitle={`Daily workout log — last ${rangeDays} days`}
+        >
+          <View style={styles.card}>
+            <WorkoutHeatmap grid={heatmapGrid} />
+            <View style={styles.heatmapLegend}>
+              <View style={[styles.heatmapCell, { width: 10, height: 10, marginRight: 4 }]} />
+              <Text style={styles.heatmapLegendText}>Rest</Text>
+              <View style={[styles.heatmapCell, styles.heatmapCellActive, { width: 10, height: 10, marginLeft: 12, marginRight: 4 }]} />
+              <Text style={styles.heatmapLegendText}>Trained</Text>
+            </View>
+          </View>
+        </CollapsibleSection>
+      )}
+
       {/* Weekly Training Frequency */}
       {hasWeeklyData && (
         <CollapsibleSection
           title="Weekly Frequency"
-          subtitle="Sessions per week — last 12 weeks"
+          subtitle={`Sessions per week — last ${rangeDays} days`}
         >
           <View style={styles.chartCard}>
             <BarChart
               data={weeklyFreq}
-              width={CHART_WIDTH}
+              width={PLOT_WIDTH}
               height={160}
-              barWidth={Math.max(14, Math.min(28, CHART_WIDTH / 14))}
+              barWidth={barWidthForN(weeklyFreq.length)}
+              yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
               roundedTop
               xAxisColor={colors.border}
               yAxisColor={colors.border}
@@ -253,7 +502,7 @@ export default function AnalyticsScreen() {
               rulesColor={colors.border}
               backgroundColor={colors.surface}
               noOfSections={4}
-              initialSpacing={12}
+              initialSpacing={8}
               endSpacing={8}
               showFractionalValues={false}
             />
@@ -265,14 +514,15 @@ export default function AnalyticsScreen() {
       {hasWeeklyData && (
         <CollapsibleSection
           title="Weekly Volume"
-          subtitle={`Total ${WEIGHT_UNIT} lifted per week — last 12 weeks`}
+          subtitle={`Total ${WEIGHT_UNIT} lifted per week — last ${rangeDays} days`}
         >
           <View style={styles.chartCard}>
             <BarChart
               data={weeklyVol}
-              width={CHART_WIDTH}
+              width={PLOT_WIDTH}
               height={160}
-              barWidth={Math.max(14, Math.min(28, CHART_WIDTH / 14))}
+              barWidth={barWidthForN(weeklyVol.length)}
+              yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
               roundedTop
               xAxisColor={colors.border}
               yAxisColor={colors.border}
@@ -281,7 +531,7 @@ export default function AnalyticsScreen() {
               rulesColor={colors.border}
               backgroundColor={colors.surface}
               noOfSections={4}
-              initialSpacing={12}
+              initialSpacing={8}
               endSpacing={8}
               showFractionalValues={false}
               formatYLabel={(v) => formatVolume(Number(v))}
@@ -292,7 +542,10 @@ export default function AnalyticsScreen() {
 
       {/* Volume by Muscle Group */}
       {hasMuscleData && (
-        <CollapsibleSection title="Muscle Group Volume" subtitle="Last 30 days">
+        <CollapsibleSection
+          title="Muscle Group Volume"
+          subtitle={`Last ${rangeDays} days`}
+        >
           <View style={styles.card}>
             {muscleVolume.map((item) => (
               <View key={item.name} style={styles.muscleRow}>
@@ -303,10 +556,7 @@ export default function AnalyticsScreen() {
                   <View
                     style={[
                       styles.muscleBarFill,
-                      {
-                        width: `${Math.round(item.pct * 100)}%`,
-                        backgroundColor: muscleColor(item.name),
-                      },
+                      { width: `${Math.round(item.pct * 100)}%`, backgroundColor: muscleColor(item.name) },
                     ]}
                   />
                 </View>
@@ -317,7 +567,7 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
-      {/* Body Weight Trend — line chart, no fill */}
+      {/* Body Weight Trend */}
       {hasBodyWeight && (
         <CollapsibleSection
           title="Body Weight"
@@ -326,7 +576,7 @@ export default function AnalyticsScreen() {
           <View style={styles.chartCard}>
             <LineChart
               data={bodyWeight}
-              width={CHART_WIDTH}
+              width={PLOT_WIDTH}
               height={160}
               color={colors.orange}
               thickness={2}
@@ -336,6 +586,7 @@ export default function AnalyticsScreen() {
               xAxisColor={colors.border}
               yAxisColor={colors.border}
               yAxisTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
+              yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
               xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
               rulesColor={colors.border}
               rulesType="dashed"
@@ -367,11 +618,105 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
+      {/* Volume vs Body Weight Overlay */}
+      {hasAnyData && (
+        <CollapsibleSection
+          title="Volume vs Body Weight"
+          subtitle={`Weekly comparison — last ${rangeDays} days`}
+        >
+          <View style={styles.overlayLegend}>
+            <View style={[styles.overlayDot, { backgroundColor: colors.blue }]} />
+            <Text style={styles.overlayLegendText}>Volume</Text>
+            <View style={[styles.overlayDot, { backgroundColor: colors.orange, marginLeft: 12 }]} />
+            <Text style={styles.overlayLegendText}>Body weight</Text>
+          </View>
+          <View style={styles.chartCard}>
+            {volBodyWeightData.volPoints.length > 0 ? (
+              <LineChart
+                data={volBodyWeightData.volPoints}
+                {...(hasOverlayBW
+                  ? {
+                      data2: volBodyWeightData.bwPoints,
+                      color2: colors.orange,
+                      dataPointsColor2: colors.orange,
+                      secondaryYAxis: {
+                        noOfSections: 4,
+                        yAxisTextStyle: { color: colors.orange, fontSize: 9 },
+                      },
+                    }
+                  : {})}
+                width={PLOT_WIDTH}
+                height={160}
+                color1={colors.blue}
+                thickness={2}
+                dataPointsColor1={colors.blue}
+                dataPointsRadius={3}
+                xAxisColor={colors.border}
+                yAxisColor={colors.border}
+                yAxisTextStyle={{ color: colors.blue, fontSize: 9 }}
+                yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
+                xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
+                rulesColor={colors.border}
+                rulesType="dashed"
+                backgroundColor={colors.surface}
+                noOfSections={4}
+                initialSpacing={12}
+                endSpacing={12}
+                hideDataPoints={volBodyWeightData.volPoints.length > 20}
+                formatYLabel={(v) => formatVolume(Number(v))}
+              />
+            ) : (
+              <View style={styles.chartPlaceholder}>
+                <Text style={styles.chartPlaceholderText}>No data yet</Text>
+              </View>
+            )}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* 1RM Trends for top exercises */}
+      {has1RMTrends && (
+        <CollapsibleSection
+          title="1RM Trends"
+          subtitle={`Estimated 1RM over time — last ${rangeDays} days`}
+        >
+          {topExercise1RMs.map((ex) => (
+            <View key={ex.name} style={styles.trendBlock}>
+              <Text style={[styles.trendExerciseName, { color: ex.color }]}>{ex.name}</Text>
+              <View style={styles.chartCard}>
+                <LineChart
+                  data={ex.data}
+                  width={PLOT_WIDTH}
+                  height={120}
+                  color={ex.color}
+                  thickness={2}
+                  dataPointsColor={ex.color}
+                  dataPointsRadius={3}
+                  curved
+                  xAxisColor={colors.border}
+                  yAxisColor={colors.border}
+                  yAxisTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
+                  yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
+                  xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
+                  rulesColor={colors.border}
+                  rulesType="dashed"
+                  backgroundColor={colors.surface}
+                  noOfSections={3}
+                  initialSpacing={16}
+                  endSpacing={16}
+                  hideDataPoints={ex.data.length > 15}
+                />
+              </View>
+            </View>
+          ))}
+        </CollapsibleSection>
+      )}
+
       {/* Recent PRs */}
       {hasPRs && (
         <CollapsibleSection
           title="Recent PRs"
-          subtitle="Best set per exercise — last 60 days"
+          subtitle={`Best set per exercise — last ${rangeDays} days`}
         >
           <View style={styles.card}>
             {recentPRs.map((pr, idx) => (
@@ -395,7 +740,7 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
-      {/* Strength Overview — all-time estimated 1RMs via Epley formula */}
+      {/* Strength Overview — all-time, range-independent */}
       {has1RMs && (
         <CollapsibleSection
           title="Strength Overview"
@@ -428,22 +773,7 @@ export default function AnalyticsScreen() {
   );
 }
 
-function StatCard({
-  label,
-  value,
-  highlight,
-}: {
-  label: string;
-  value: string;
-  highlight?: boolean;
-}) {
-  return (
-    <View style={[styles.statCard, highlight && styles.statCardHighlight]}>
-      <Text style={[styles.statValue, highlight && styles.statValueHighlight]}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  );
-}
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
@@ -465,9 +795,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
-  section: {
-    marginBottom: 28,
-  },
+  section: { marginBottom: 28 },
 
   collapsibleHeader: {
     flexDirection: 'row',
@@ -476,20 +804,43 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     marginBottom: 2,
   },
-  collapsibleHeaderText: {
-    flex: 1,
+  collapsibleHeaderText: { flex: 1 },
+  chevron: { color: colors.textTertiary, fontSize: 16, marginLeft: 8 },
+
+  // Range selector
+  rangeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 28,
   },
-  chevron: {
-    color: colors.textTertiary,
-    fontSize: 16,
-    marginLeft: 8,
+  rangeBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+  },
+  rangeBtnActive: {
+    backgroundColor: colors.accent + '20',
+    borderColor: colors.accent,
+  },
+  rangeBtnText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  rangeBtnTextActive: {
+    color: colors.accent,
   },
 
+  // Lifetime stats
   statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
-    marginBottom: 28,
+    marginBottom: 20,
     marginTop: 8,
   },
   statCard: {
@@ -513,9 +864,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: -0.5,
   },
-  statValueHighlight: {
-    color: colors.accent,
-  },
+  statValueHighlight: { color: colors.accent },
   statLabel: {
     color: colors.textTertiary,
     fontSize: 11,
@@ -534,18 +883,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 28,
   },
-  emptyTitle: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  emptyText: {
-    color: colors.textSecondary,
-    fontSize: 14,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
+  emptyTitle: { color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: 8 },
+  emptyText: { color: colors.textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 20 },
 
   card: {
     backgroundColor: colors.surface,
@@ -563,7 +902,41 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingRight: 16,
   },
+  chartPlaceholder: {
+    height: 160,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chartPlaceholderText: {
+    color: colors.textTertiary,
+    fontSize: 13,
+  },
 
+  // Heatmap
+  heatmapScroll: { paddingVertical: 12, paddingHorizontal: 14 },
+  heatmapContainer: { flexDirection: 'row', gap: HEATMAP_GAP },
+  heatmapDayLabels: { justifyContent: 'space-between' },
+  heatmapDayLabel: {
+    color: colors.textTertiary,
+    fontSize: 7,
+    width: 10,
+  },
+  heatmapWeek: {},
+  heatmapCell: {
+    borderRadius: 2,
+    backgroundColor: colors.surfaceElevated,
+  },
+  heatmapCellActive: { backgroundColor: colors.accent },
+  heatmapCellFuture: { backgroundColor: 'transparent' },
+  heatmapLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+  },
+  heatmapLegendText: { color: colors.textTertiary, fontSize: 11 },
+
+  // Muscle group bars
   muscleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -571,12 +944,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     gap: 10,
   },
-  muscleLabel: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    width: 90,
-    fontWeight: '500',
-  },
+  muscleLabel: { color: colors.textSecondary, fontSize: 13, width: 90, fontWeight: '500' },
   muscleBarTrack: {
     flex: 1,
     height: 8,
@@ -584,10 +952,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     overflow: 'hidden',
   },
-  muscleBarFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
+  muscleBarFill: { height: '100%', borderRadius: 4 },
   muscleValue: {
     color: colors.textSecondary,
     fontSize: 12,
@@ -596,21 +961,36 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  // Tooltip
   tooltip: {
     backgroundColor: colors.surfaceElevated,
     borderRadius: 8,
     padding: 8,
     borderWidth: 1,
   },
-  tooltipValue: {
+  tooltipValue: { fontSize: 13, fontWeight: '700' },
+  tooltipDate: { color: colors.textTertiary, fontSize: 10 },
+
+  // Volume vs body weight overlay legend
+  overlayLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    paddingHorizontal: 2,
+  },
+  overlayDot: { width: 10, height: 10, borderRadius: 5 },
+  overlayLegendText: { color: colors.textSecondary, fontSize: 12, marginLeft: 4 },
+
+  // 1RM Trends
+  trendBlock: { marginBottom: 16 },
+  trendExerciseName: {
     fontSize: 13,
     fontWeight: '700',
-  },
-  tooltipDate: {
-    color: colors.textTertiary,
-    fontSize: 10,
+    marginBottom: 6,
+    paddingHorizontal: 2,
   },
 
+  // PR rows
   prRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -618,35 +998,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  prRowBorder: {
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  prLeft: {
-    flex: 1,
-    marginRight: 12,
-  },
-  prExercise: {
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  prDate: {
-    color: colors.textTertiary,
-    fontSize: 11,
-  },
-  prRight: {
-    alignItems: 'flex-end',
-  },
-  prWeight: {
-    color: colors.accent,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  pr1rm: {
-    color: colors.textSecondary,
-    fontSize: 11,
-    marginTop: 2,
-  },
+  prRowBorder: { borderBottomWidth: 1, borderBottomColor: colors.border },
+  prLeft: { flex: 1, marginRight: 12 },
+  prExercise: { color: colors.text, fontSize: 14, fontWeight: '600', marginBottom: 2 },
+  prDate: { color: colors.textTertiary, fontSize: 11 },
+  prRight: { alignItems: 'flex-end' },
+  prWeight: { color: colors.accent, fontSize: 14, fontWeight: '700' },
+  pr1rm: { color: colors.textSecondary, fontSize: 11, marginTop: 2 },
 });

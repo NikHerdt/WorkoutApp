@@ -5,7 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Alert,
   Animated,
   KeyboardAvoidingView,
   Platform,
@@ -20,6 +19,7 @@ import SetRow from '../components/SetRow';
 import RestTimer from '../components/RestTimer';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import BodyWeightLogModal from '../components/BodyWeightLogModal';
+import ActionSheet, { ActionSheetAction } from '../components/ActionSheet';
 import { toLocalDateYmd } from '../utils/dateLocal';
 import { WEIGHT_UNIT_HEADER } from '../constants/weightUnits';
 
@@ -51,6 +51,11 @@ export default function WorkoutScreen() {
   const [substituteModalForIndex, setSubstituteModalForIndex] = useState<number | null>(null);
   const [addExerciseModal, setAddExerciseModal] = useState(false);
   const [bodyWeightModal, setBodyWeightModal] = useState(false);
+  const [actionSheet, setActionSheet] = useState<{
+    title?: string;
+    message?: string;
+    actions: ActionSheetAction[];
+  } | null>(null);
 
   const activeExerciseIds = activeExercises.map((e) => e.exerciseId).join(',');
 
@@ -74,21 +79,21 @@ export default function WorkoutScreen() {
   }, [activeExerciseIds, activeExercises]);
 
   function handleStopWorkout() {
-    Alert.alert(
-      'Stop workout?',
-      'Your in-progress session will be discarded. Logged sets are not saved until you finish a workout.',
-      [
-        { text: 'Cancel', style: 'cancel' },
+    setActionSheet({
+      title: 'Stop Workout?',
+      message: 'Your in-progress session will be discarded. Sets are only saved when you finish.',
+      actions: [
         {
-          text: 'Stop',
+          label: 'Stop',
           style: 'destructive',
           onPress: () => {
             abortWorkout();
             navigation.goBack();
           },
         },
-      ]
-    );
+        { label: 'Cancel', style: 'cancel' },
+      ],
+    });
   }
 
   function completeFinishFlow() {
@@ -103,23 +108,22 @@ export default function WorkoutScreen() {
     );
 
     if (totalCompleted === 0) {
-      Alert.alert('No Sets Logged', 'Log at least one set before finishing.', [
-        { text: 'OK' },
-      ]);
+      setActionSheet({
+        title: 'No Sets Logged',
+        message: 'Log at least one set before finishing.',
+        actions: [{ label: 'OK', style: 'cancel' }],
+      });
       return;
     }
 
-    Alert.alert(
-      'Finish Workout?',
-      `You've logged ${totalCompleted} sets. You can log body weight next (optional).`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Finish',
-          onPress: () => setBodyWeightModal(true),
-        },
-      ]
-    );
+    setActionSheet({
+      title: 'Finish Workout?',
+      message: `${totalCompleted} set${totalCompleted > 1 ? 's' : ''} logged. You can record body weight next (optional).`,
+      actions: [
+        { label: 'Finish', onPress: () => setBodyWeightModal(true) },
+        { label: 'Cancel', style: 'cancel' },
+      ],
+    });
   }
 
   function getWorkingSetNumber(exerciseIndex: number, setIndex: number): number {
@@ -132,14 +136,14 @@ export default function WorkoutScreen() {
     const ex = activeExercises[exerciseIndex];
     const completedCount = ex.sets.filter((s) => s.completed).length;
     if (completedCount > 0) {
-      Alert.alert(
-        'Remove exercise?',
-        `${ex.exerciseName} has ${completedCount} logged set${completedCount > 1 ? 's' : ''} that will be discarded.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Remove', style: 'destructive', onPress: () => removeExerciseFromSession(exerciseIndex) },
-        ]
-      );
+      setActionSheet({
+        title: 'Remove Exercise?',
+        message: `${ex.exerciseName} has ${completedCount} logged set${completedCount > 1 ? 's' : ''} that will be discarded.`,
+        actions: [
+          { label: 'Remove', style: 'destructive', onPress: () => removeExerciseFromSession(exerciseIndex) },
+          { label: 'Cancel', style: 'cancel' },
+        ],
+      });
     } else {
       removeExerciseFromSession(exerciseIndex);
     }
@@ -303,17 +307,14 @@ export default function WorkoutScreen() {
                 <TouchableOpacity
                   style={styles.setControlBtn}
                   onPress={() => {
-                    Alert.alert('Add set', 'Choose set type', [
-                      {
-                        text: 'Warmup set',
-                        onPress: () => addSet(exerciseIndex, 'warmup'),
-                      },
-                      {
-                        text: 'Working set',
-                        onPress: () => addSet(exerciseIndex, 'working'),
-                      },
-                      { text: 'Cancel', style: 'cancel' },
-                    ]);
+                    setActionSheet({
+                      title: 'Add Set',
+                      actions: [
+                        { label: 'Warmup set', onPress: () => addSet(exerciseIndex, 'warmup') },
+                        { label: 'Working set', onPress: () => addSet(exerciseIndex, 'working') },
+                        { label: 'Cancel', style: 'cancel' },
+                      ],
+                    });
                   }}
                 >
                   <Text style={styles.setControlText}>+ Add set</Text>
@@ -358,14 +359,14 @@ export default function WorkoutScreen() {
           const hadCompleted = activeExercises[idx].sets.some((s) => s.completed);
           const run = () => replaceActiveExercise(idx, newId);
           if (hadCompleted) {
-            Alert.alert(
-              'Replace exercise?',
-              'Completed sets for this exercise will be cleared.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Replace', style: 'destructive', onPress: run },
-              ]
-            );
+            setActionSheet({
+              title: 'Replace Exercise?',
+              message: 'Completed sets for this exercise will be cleared.',
+              actions: [
+                { label: 'Replace', style: 'destructive', onPress: run },
+                { label: 'Cancel', style: 'cancel' },
+              ],
+            });
           } else {
             run();
           }
@@ -380,6 +381,14 @@ export default function WorkoutScreen() {
           addExerciseToSession(id);
           setAddExerciseModal(false);
         }}
+      />
+
+      <ActionSheet
+        visible={actionSheet !== null}
+        title={actionSheet?.title}
+        message={actionSheet?.message}
+        actions={actionSheet?.actions ?? []}
+        onClose={() => setActionSheet(null)}
       />
 
       <BodyWeightLogModal
