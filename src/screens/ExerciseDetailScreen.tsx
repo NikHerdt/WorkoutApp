@@ -411,7 +411,18 @@ export default function ExerciseDetailScreen() {
       {e1rmChartData.length > 0 && (
         <View style={styles.chartSection}>
           <Text style={styles.chartTitle}>Estimated 1RM ({WEIGHT_UNIT})</Text>
-          <Text style={styles.chartSubtitle}>Epley formula: weight × (1 + reps / 30)</Text>
+          <View style={styles.oneRMStatRow}>
+            <View>
+              <Text style={styles.oneRMStatLabel}>MOST RECENT</Text>
+              <Text style={styles.oneRMStatValue}>
+                {e1rmChartData[e1rmChartData.length - 1].value} {WEIGHT_UNIT}
+              </Text>
+              <Text style={styles.oneRMStatDate}>
+                {e1rmChartData[e1rmChartData.length - 1].label}
+              </Text>
+            </View>
+            <Text style={styles.oneRMFormula}>weight × (1 + reps / 30)</Text>
+          </View>
           <View style={styles.chartContainer}>
             <LineChart
               data={e1rmChartData}
@@ -617,6 +628,45 @@ const styles = StyleSheet.create({
 
   chartSection: { marginBottom: 16 },
   section: { marginBottom: 16 },
+
+  oneRMStatRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    backgroundColor: '#A78BFA18',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#A78BFA44',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  oneRMStatLabel: {
+    color: '#A78BFA',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    marginBottom: 4,
+  },
+  oneRMStatValue: {
+    color: '#A78BFA',
+    fontSize: 32,
+    fontWeight: '700',
+    lineHeight: 36,
+  },
+  oneRMStatDate: {
+    color: '#A78BFA99',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  oneRMFormula: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontStyle: 'italic',
+    textAlign: 'right',
+    maxWidth: 140,
+  },
+
   chartTitle: {
     color: colors.textSecondary,
     fontSize: 12,

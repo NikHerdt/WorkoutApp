@@ -345,11 +345,21 @@ export function getCustomExercises() {
   );
 }
 
-export function insertCustomExercise(name: string, muscleGroup: string, notes: string): number {
+export function insertCustomExercise(
+  name: string,
+  muscleGroup: string,
+  notes: string,
+  warmupSets: number,
+  workingSets: number,
+  targetReps: string,
+  targetRpe: string,
+  restSeconds: number
+): number {
   const result = getDb().runSync(
-    `INSERT INTO exercises (name, muscle_group, notes, is_custom, working_sets, target_reps, rest_seconds)
-     VALUES (?, ?, ?, 1, 3, '8-12', 90)`,
-    [name, muscleGroup, notes]
+    `INSERT INTO exercises
+       (name, muscle_group, notes, is_custom, warmup_sets, working_sets, target_reps, target_rpe, rest_seconds)
+     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+    [name, muscleGroup, notes, warmupSets, workingSets, targetReps, targetRpe, restSeconds]
   );
   return result.lastInsertRowId;
 }
@@ -543,7 +553,7 @@ export function getExerciseVolumeHistory(exerciseId: number) {
   return getDb().getAllSync<{ date: string; total_volume: number; max_weight: number; total_reps: number }>(
     `SELECT
        date(datetime(ws.completed_at, 'localtime')) as date,
-       SUM(sl.weight * sl.reps) as total_volume,
+       SUM(CASE WHEN sl.weight > 0 THEN sl.weight * sl.reps ELSE sl.reps END) as total_volume,
        MAX(sl.weight) as max_weight,
        SUM(sl.reps) as total_reps
      FROM set_logs sl
@@ -590,10 +600,10 @@ export function getLifetimeStats() {
     `SELECT COUNT(*) as total FROM workout_sessions WHERE completed_at IS NOT NULL`
   );
   const volume = db.getFirstSync<{ total: number }>(
-    `SELECT COALESCE(SUM(sl.weight * sl.reps), 0) as total
+    `SELECT COALESCE(SUM(CASE WHEN sl.weight > 0 THEN sl.weight * sl.reps ELSE sl.reps END), 0) as total
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
-     WHERE ws.completed_at IS NOT NULL AND sl.set_type = 'working'`
+     WHERE ws.completed_at IS NOT NULL AND sl.set_type = 'working' AND sl.reps > 0`
   );
   const completedByDate = db.getAllSync<{ d: string }>(
     `SELECT DISTINCT date(datetime(completed_at, 'localtime')) as d
@@ -653,48 +663,48 @@ export function getLifetimeStats() {
   };
 }
 
-export function getWeeklySessionCounts(weeks = 12) {
+export function getSessionDates(weeks = 12): string[] {
   const db = getDb();
-  const rows = db.getAllSync<{ week: string; count: number }>(
-    `SELECT strftime('%Y-W%W', datetime(completed_at, 'localtime')) as week, COUNT(*) as count
+  const rows = db.getAllSync<{ d: string }>(
+    `SELECT date(datetime(completed_at, 'localtime')) as d
      FROM workout_sessions
      WHERE completed_at IS NOT NULL
        AND completed_at >= date('now', ?)
-     GROUP BY week
-     ORDER BY week ASC`,
+     ORDER BY d ASC`,
     [`-${weeks * 7} days`]
   );
-  return rows;
+  return rows.map((r) => r.d);
 }
 
-export function getWeeklyVolumeTotals(weeks = 12) {
+export function getSessionVolumes(weeks = 12): { date: string; volume: number }[] {
   const db = getDb();
-  const rows = db.getAllSync<{ week: string; total_volume: number }>(
-    `SELECT strftime('%Y-W%W', datetime(ws.completed_at, 'localtime')) as week,
-            SUM(sl.weight * sl.reps) as total_volume
+  return db.getAllSync<{ date: string; volume: number }>(
+    `SELECT date(datetime(ws.completed_at, 'localtime')) as date,
+            SUM(CASE WHEN sl.weight > 0 THEN sl.weight * sl.reps ELSE sl.reps END) as volume
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
      WHERE ws.completed_at IS NOT NULL
        AND ws.completed_at >= date('now', ?)
        AND sl.set_type = 'working'
-     GROUP BY week
-     ORDER BY week ASC`,
+       AND sl.reps > 0
+     GROUP BY date
+     ORDER BY date ASC`,
     [`-${weeks * 7} days`]
   );
-  return rows;
 }
 
 export function getMuscleGroupVolume(days = 30) {
   const db = getDb();
   const rows = db.getAllSync<{ muscle_group: string; total_volume: number }>(
     `SELECT e.muscle_group,
-            SUM(sl.weight * sl.reps) as total_volume
+            SUM(CASE WHEN sl.weight > 0 THEN sl.weight * sl.reps ELSE sl.reps END) as total_volume
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
      JOIN exercises e ON sl.exercise_id = e.id
      WHERE ws.completed_at IS NOT NULL
        AND ws.completed_at >= date('now', ?)
        AND sl.set_type = 'working'
+       AND sl.reps > 0
        AND e.muscle_group IS NOT NULL
        AND e.muscle_group != ''
      GROUP BY e.muscle_group
@@ -833,16 +843,12 @@ export function getAvgSessionDurationMins(days: number): number {
   return Math.round(row?.avg_mins ?? 0);
 }
 
-/** Weekly body-weight averages aligned to week buckets (same key format as getWeeklyVolumeTotals). */
-export function getWeeklyBodyWeightForRange(days: number): { week: string; avg_lbs: number }[] {
-  return getDb().getAllSync<{ week: string; avg_lbs: number }>(
-    `SELECT
-       strftime('%Y-W%W', logged_date) as week,
-       AVG(weight_lbs) as avg_lbs
+export function getBodyWeightEntries(days: number): { date: string; lbs: number }[] {
+  return getDb().getAllSync<{ date: string; lbs: number }>(
+    `SELECT logged_date as date, weight_lbs as lbs
      FROM body_weight_log
      WHERE logged_date >= date('now', ?)
-     GROUP BY week
-     ORDER BY week ASC`,
+     ORDER BY logged_date ASC`,
     [`-${days} days`]
   );
 }

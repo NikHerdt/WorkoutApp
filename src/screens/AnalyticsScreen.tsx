@@ -14,8 +14,8 @@ import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { toLocalDateYmd } from '../utils/dateLocal';
 import {
   getLifetimeStats,
-  getWeeklySessionCounts,
-  getWeeklyVolumeTotals,
+  getSessionDates,
+  getSessionVolumes,
   getMuscleGroupVolume,
   getRecentPRs,
   getRecentBodyWeights,
@@ -23,7 +23,7 @@ import {
   getWorkoutDatesInRange,
   getAvgSessionDurationMins,
   get1RMHistoryInRange,
-  getWeeklyBodyWeightForRange,
+  getBodyWeightEntries,
 } from '../db/database';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -134,6 +134,15 @@ function buildWeekBuckets(weeks: number): WeekBucket[] {
     result.push({ key, label });
   }
   return result;
+}
+
+/** Map a YYYY-MM-DD string to the same week-bucket key that buildWeekBuckets produces. */
+function dateToWeekKey(ymd: string): string {
+  const d = new Date(`${ymd}T12:00:00`);
+  const monday = getMondayOfWeek(d);
+  const year = monday.getFullYear();
+  const weekNum = sqliteWeekNum(monday);
+  return `${year}-W${String(weekNum).padStart(2, '0')}`;
 }
 
 /** Build a grid of [week][dayIndex 0=Mon..6=Sun] cells for the heatmap. */
@@ -337,8 +346,12 @@ export default function AnalyticsScreen() {
       const every = labelEvery(weeks);
       const buckets = buildWeekBuckets(weeks);
 
+      // Bucket raw dates into week keys using the same JS logic as buildWeekBuckets
       const freqMap: Record<string, number> = {};
-      for (const row of getWeeklySessionCounts(weeks)) freqMap[row.week] = row.count;
+      for (const d of getSessionDates(weeks)) {
+        const k = dateToWeekKey(d);
+        freqMap[k] = (freqMap[k] ?? 0) + 1;
+      }
       setWeeklyFreq(
         buckets.map((b, i) => ({
           value: freqMap[b.key] ?? 0,
@@ -348,7 +361,10 @@ export default function AnalyticsScreen() {
       );
 
       const volMap: Record<string, number> = {};
-      for (const row of getWeeklyVolumeTotals(weeks)) volMap[row.week] = row.total_volume;
+      for (const row of getSessionVolumes(weeks)) {
+        const k = dateToWeekKey(row.date);
+        volMap[k] = (volMap[k] ?? 0) + row.volume;
+      }
       setWeeklyVol(
         buckets.map((b, i) => ({
           value: volMap[b.key] ?? 0,
@@ -373,15 +389,22 @@ export default function AnalyticsScreen() {
       const bwRows = getRecentBodyWeights(bwLimit).reverse();
       setBodyWeight(bwRows.map((r) => ({ value: r.weight_lbs, label: r.logged_date.slice(5) })));
 
-      // ── Volume vs body weight overlay (aligned by week bucket) ──
-      const bwWeekMap: Record<string, number> = {};
-      for (const row of getWeeklyBodyWeightForRange(rangeDays)) bwWeekMap[row.week] = row.avg_lbs;
+      // ── Volume vs body weight overlay (aligned by week bucket in JS) ──
+      const bwWeekMap: Record<string, { sum: number; count: number }> = {};
+      for (const row of getBodyWeightEntries(rangeDays)) {
+        const k = dateToWeekKey(row.date);
+        const entry = bwWeekMap[k] ?? { sum: 0, count: 0 };
+        entry.sum += row.lbs;
+        entry.count += 1;
+        bwWeekMap[k] = entry;
+      }
       const volPoints: { value: number; label: string }[] = [];
       const bwPoints: { value: number; label: string }[] = [];
       buckets.forEach((b, i) => {
         const label = i % every === 0 ? b.label : '';
         volPoints.push({ value: volMap[b.key] ?? 0, label });
-        bwPoints.push({ value: bwWeekMap[b.key] ?? 0, label });
+        const bwEntry = bwWeekMap[b.key];
+        bwPoints.push({ value: bwEntry ? Math.round(bwEntry.sum / bwEntry.count) : 0, label });
       });
       setVolBodyWeightData({ volPoints, bwPoints });
 

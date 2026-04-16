@@ -15,6 +15,7 @@ import {
   scheduleRestEndNotification,
   cancelRestEndNotification,
   updateRestTimerNotification,
+  showRestTimerEndTimeNotification,
   dismissRestTimerNotification,
 } from '../utils/restTimerNotification';
 
@@ -78,17 +79,25 @@ export default function RestTimer() {
     };
   }, [restTimerActive]);
 
-  // When app comes back to foreground, resync the countdown from the stored end time.
+  // Handle app going to background and returning to foreground.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       const prev = appStateRef.current;
       appStateRef.current = nextState;
 
-      if (
-        nextState === 'active' &&
-        (prev === 'background' || prev === 'inactive') &&
-        useWorkoutStore.getState().restTimerActive
-      ) {
+      const isGoingBackground =
+        (nextState === 'background' || nextState === 'inactive') && prev === 'active';
+      const isReturningForeground =
+        nextState === 'active' && (prev === 'background' || prev === 'inactive');
+
+      if (isGoingBackground && useWorkoutStore.getState().restTimerActive) {
+        // JS timer will pause — switch to a static "Done at HH:MM" notification
+        // so the tray always shows accurate info no matter when the user glances at it.
+        showRestTimerEndTimeNotification(useWorkoutStore.getState().restTimerSeconds);
+      }
+
+      if (isReturningForeground && useWorkoutStore.getState().restTimerActive) {
+        // Resync the stored countdown from wall-clock elapsed time.
         syncRestTimer();
 
         if (intervalRef.current) {
@@ -99,6 +108,7 @@ export default function RestTimer() {
         const total = useWorkoutStore.getState().restTimerTotal;
 
         if (remaining > 0) {
+          // Resume live countdown in the notification now that JS is running again.
           updateRestTimerNotification(remaining);
 
           progressAnim.stopAnimation();

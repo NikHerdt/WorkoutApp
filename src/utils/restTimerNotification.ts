@@ -58,6 +58,33 @@ export async function updateRestTimerNotification(remainingSeconds: number): Pro
   }
 }
 
+/**
+ * When the app is backgrounded JS cannot update the notification every second.
+ * Switch to a static "Done at HH:MM AM/PM" message so it stays accurate.
+ */
+export async function showRestTimerEndTimeNotification(remainingSeconds: number): Promise<void> {
+  try {
+    ensureHandler();
+    const end = new Date(Date.now() + remainingSeconds * 1000);
+    const h = end.getHours();
+    const m = end.getMinutes();
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    const timeStr = `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+    await Notifications.scheduleNotificationAsync({
+      identifier: ACTIVE_NOTIFICATION_ID,
+      content: {
+        title: 'Rest Timer',
+        body: `Done at ${timeStr}`,
+        sound: false,
+      },
+      trigger: null,
+    });
+  } catch {
+    // Native module unavailable.
+  }
+}
+
 export async function dismissRestTimerNotification(): Promise<void> {
   try {
     await Notifications.dismissNotificationAsync(ACTIVE_NOTIFICATION_ID);
