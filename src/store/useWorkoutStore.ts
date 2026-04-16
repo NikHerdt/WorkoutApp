@@ -360,17 +360,20 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       const completedSet = sets[setIndex];
       sets[setIndex] = { ...completedSet, completed: true };
 
-      // Propagate this set's weight and reps to the next uncompleted set of the same type.
-      const nextIndex = sets.findIndex(
-        (s, i) => i > setIndex && !s.completed && s.setType === completedSet.setType
-      );
-      if (nextIndex !== -1) {
-        sets[nextIndex] = {
-          ...sets[nextIndex],
-          weight: completedSet.weight,
-          reps: completedSet.reps,
-          propagationVersion: (sets[nextIndex].propagationVersion ?? 0) + 1,
-        };
+      // Propagate weight/reps to the next uncompleted set only for working sets.
+      // Warmup sets have pre-calculated presets and should not overwrite each other.
+      if (completedSet.setType === 'working') {
+        const nextIndex = sets.findIndex(
+          (s, i) => i > setIndex && !s.completed && s.setType === 'working'
+        );
+        if (nextIndex !== -1) {
+          sets[nextIndex] = {
+            ...sets[nextIndex],
+            weight: completedSet.weight,
+            reps: completedSet.reps,
+            propagationVersion: (sets[nextIndex].propagationVersion ?? 0) + 1,
+          };
+        }
       }
 
       exercises[exerciseIndex] = { ...exercises[exerciseIndex], sets };

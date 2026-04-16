@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   Dimensions,
+  TouchableOpacity,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { BarChart, LineChart } from 'react-native-gifted-charts';
@@ -17,6 +18,7 @@ import {
   getMuscleGroupVolume,
   getRecentPRs,
   getRecentBodyWeights,
+  getTop1RMs,
 } from '../db/database';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -101,6 +103,41 @@ interface LifetimeStats {
   longestStreak: number;
 }
 
+function CollapsibleSection({
+  title,
+  subtitle,
+  children,
+  defaultExpanded = true,
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+  defaultExpanded?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  return (
+    <View style={styles.section}>
+      <TouchableOpacity
+        style={styles.collapsibleHeader}
+        onPress={() => setExpanded((v) => !v)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.collapsibleHeaderText}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          {subtitle && !expanded ? (
+            <Text style={styles.sectionSubtitleInline}>{subtitle}</Text>
+          ) : null}
+        </View>
+        <Text style={styles.chevron}>{expanded ? '▾' : '▸'}</Text>
+      </TouchableOpacity>
+      {expanded && subtitle ? (
+        <Text style={styles.sectionSubtitle}>{subtitle}</Text>
+      ) : null}
+      {expanded ? children : null}
+    </View>
+  );
+}
+
 export default function AnalyticsScreen() {
   const [stats, setStats] = useState<LifetimeStats>({
     totalSessions: 0,
@@ -113,6 +150,7 @@ export default function AnalyticsScreen() {
   const [muscleVolume, setMuscleVolume] = useState<{ name: string; volume: number; pct: number }[]>([]);
   const [bodyWeight, setBodyWeight] = useState<{ value: number; label: string }[]>([]);
   const [recentPRs, setRecentPRs] = useState<any[]>([]);
+  const [top1RMs, setTop1RMs] = useState<any[]>([]);
   const [hasAnyData, setHasAnyData] = useState(false);
 
   useFocusEffect(
@@ -161,6 +199,7 @@ export default function AnalyticsScreen() {
       );
 
       setRecentPRs(getRecentPRs(10));
+      setTop1RMs(getTop1RMs(15));
     }, [])
   );
 
@@ -168,6 +207,7 @@ export default function AnalyticsScreen() {
   const hasMuscleData = muscleVolume.length > 0;
   const hasBodyWeight = bodyWeight.length > 0;
   const hasPRs = recentPRs.length > 0;
+  const has1RMs = top1RMs.length > 0;
 
   return (
     <ScrollView
@@ -175,7 +215,7 @@ export default function AnalyticsScreen() {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      {/* Lifetime Stats */}
+      {/* Lifetime Stats — always visible, not collapsible */}
       <Text style={styles.sectionTitle}>Lifetime</Text>
       <View style={styles.statsGrid}>
         <StatCard label="Sessions" value={String(stats.totalSessions)} />
@@ -195,9 +235,10 @@ export default function AnalyticsScreen() {
 
       {/* Weekly Training Frequency */}
       {hasWeeklyData && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Weekly Frequency</Text>
-          <Text style={styles.sectionSubtitle}>Sessions per week — last 12 weeks</Text>
+        <CollapsibleSection
+          title="Weekly Frequency"
+          subtitle="Sessions per week — last 12 weeks"
+        >
           <View style={styles.chartCard}>
             <BarChart
               data={weeklyFreq}
@@ -217,14 +258,15 @@ export default function AnalyticsScreen() {
               showFractionalValues={false}
             />
           </View>
-        </View>
+        </CollapsibleSection>
       )}
 
       {/* Weekly Volume Trend */}
       {hasWeeklyData && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Weekly Volume</Text>
-          <Text style={styles.sectionSubtitle}>Total {WEIGHT_UNIT} lifted per week — last 12 weeks</Text>
+        <CollapsibleSection
+          title="Weekly Volume"
+          subtitle={`Total ${WEIGHT_UNIT} lifted per week — last 12 weeks`}
+        >
           <View style={styles.chartCard}>
             <BarChart
               data={weeklyVol}
@@ -245,14 +287,12 @@ export default function AnalyticsScreen() {
               formatYLabel={(v) => formatVolume(Number(v))}
             />
           </View>
-        </View>
+        </CollapsibleSection>
       )}
 
       {/* Volume by Muscle Group */}
       {hasMuscleData && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Muscle Group Volume</Text>
-          <Text style={styles.sectionSubtitle}>Last 30 days</Text>
+        <CollapsibleSection title="Muscle Group Volume" subtitle="Last 30 days">
           <View style={styles.card}>
             {muscleVolume.map((item) => (
               <View key={item.name} style={styles.muscleRow}>
@@ -274,14 +314,15 @@ export default function AnalyticsScreen() {
               </View>
             ))}
           </View>
-        </View>
+        </CollapsibleSection>
       )}
 
-      {/* Body Weight Trend */}
+      {/* Body Weight Trend — line chart, no fill */}
       {hasBodyWeight && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Body Weight</Text>
-          <Text style={styles.sectionSubtitle}>Last {bodyWeight.length} entries ({WEIGHT_UNIT})</Text>
+        <CollapsibleSection
+          title="Body Weight"
+          subtitle={`Last ${bodyWeight.length} entries (${WEIGHT_UNIT})`}
+        >
           <View style={styles.chartCard}>
             <LineChart
               data={bodyWeight}
@@ -291,9 +332,6 @@ export default function AnalyticsScreen() {
               thickness={2}
               dataPointsColor={colors.orange}
               dataPointsRadius={3}
-              startFillColor={colors.orange + '30'}
-              endFillColor={colors.orange + '00'}
-              areaChart
               curved
               xAxisColor={colors.border}
               yAxisColor={colors.border}
@@ -326,14 +364,15 @@ export default function AnalyticsScreen() {
               }}
             />
           </View>
-        </View>
+        </CollapsibleSection>
       )}
 
       {/* Recent PRs */}
       {hasPRs && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Recent PRs</Text>
-          <Text style={styles.sectionSubtitle}>Best set per exercise — last 60 days</Text>
+        <CollapsibleSection
+          title="Recent PRs"
+          subtitle="Best set per exercise — last 60 days"
+        >
           <View style={styles.card}>
             {recentPRs.map((pr, idx) => (
               <View
@@ -346,14 +385,42 @@ export default function AnalyticsScreen() {
                 </View>
                 <View style={styles.prRight}>
                   <Text style={styles.prWeight}>
-                    {pr.max_weight} {WEIGHT_UNIT} × {pr.reps}
+                    {pr.max_weight} {WEIGHT_UNIT} x {pr.reps}
                   </Text>
                   <Text style={styles.pr1rm}>~{pr.estimated_1rm} {WEIGHT_UNIT} 1RM</Text>
                 </View>
               </View>
             ))}
           </View>
-        </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Strength Overview — all-time estimated 1RMs via Epley formula */}
+      {has1RMs && (
+        <CollapsibleSection
+          title="Strength Overview"
+          subtitle="All-time estimated 1RM per exercise"
+        >
+          <View style={styles.card}>
+            {top1RMs.map((item, idx) => (
+              <View
+                key={idx}
+                style={[styles.prRow, idx < top1RMs.length - 1 && styles.prRowBorder]}
+              >
+                <View style={styles.prLeft}>
+                  <Text style={styles.prExercise} numberOfLines={1}>{item.exercise_name}</Text>
+                  <Text style={styles.prDate}>
+                    {item.best_weight} {WEIGHT_UNIT} x {item.best_reps} reps — {item.last_date}
+                  </Text>
+                </View>
+                <View style={styles.prRight}>
+                  <Text style={styles.prWeight}>~{item.estimated_1rm} {WEIGHT_UNIT}</Text>
+                  <Text style={styles.pr1rm}>est. 1RM</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </CollapsibleSection>
       )}
 
       <View style={{ height: 40 }} />
@@ -386,15 +453,36 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 17,
     fontWeight: '700',
-    marginBottom: 4,
   },
   sectionSubtitle: {
     color: colors.textTertiary,
     fontSize: 12,
     marginBottom: 12,
+    marginTop: 2,
+  },
+  sectionSubtitleInline: {
+    color: colors.textTertiary,
+    fontSize: 12,
+    marginTop: 2,
   },
   section: {
     marginBottom: 28,
+  },
+
+  collapsibleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+    marginBottom: 2,
+  },
+  collapsibleHeaderText: {
+    flex: 1,
+  },
+  chevron: {
+    color: colors.textTertiary,
+    fontSize: 16,
+    marginLeft: 8,
   },
 
   statsGrid: {

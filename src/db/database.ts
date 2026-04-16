@@ -725,6 +725,36 @@ export function getRecentPRs(limit = 10) {
   );
 }
 
+export function getTop1RMs(limit = 15) {
+  const db = getDb();
+  return db.getAllSync<{
+    exercise_name: string;
+    best_weight: number;
+    best_reps: number;
+    estimated_1rm: number;
+    last_date: string;
+  }>(
+    `SELECT
+       e.name AS exercise_name,
+       sl.weight AS best_weight,
+       sl.reps AS best_reps,
+       ROUND(sl.weight * (1.0 + sl.reps / 30.0), 1) AS estimated_1rm,
+       date(MAX(ws.completed_at)) AS last_date
+     FROM set_logs sl
+     JOIN workout_sessions ws ON sl.session_id = ws.id
+     JOIN exercises e ON sl.exercise_id = e.id
+     WHERE ws.completed_at IS NOT NULL
+       AND sl.set_type = 'working'
+       AND sl.weight > 0
+       AND sl.reps > 0
+     GROUP BY sl.exercise_id
+     HAVING ROUND(sl.weight * (1.0 + sl.reps / 30.0), 1) = MAX(ROUND(sl.weight * (1.0 + sl.reps / 30.0), 1))
+     ORDER BY estimated_1rm DESC
+     LIMIT ?`,
+    [limit]
+  );
+}
+
 export function getEstimated1RMHistory(exerciseId: number) {
   const db = getDb();
   return db.getAllSync<{ date: string; estimated_1rm: number; weight: number; reps: number }>(

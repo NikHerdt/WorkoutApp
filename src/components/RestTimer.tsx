@@ -14,6 +14,8 @@ import { useWorkoutStore } from '../store/useWorkoutStore';
 import {
   scheduleRestEndNotification,
   cancelRestEndNotification,
+  updateRestTimerNotification,
+  dismissRestTimerNotification,
 } from '../utils/restTimerNotification';
 
 export default function RestTimer() {
@@ -29,14 +31,26 @@ export default function RestTimer() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const progressAnim = useRef(new Animated.Value(1)).current;
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  // Track whether the timer reached zero naturally so we don't cancel the end notification.
+  const naturallyCompletedRef = useRef(false);
 
-  // Schedule / cancel notification and manage interval when timer toggles
   useEffect(() => {
     if (restTimerActive) {
+      naturallyCompletedRef.current = false;
+
       scheduleRestEndNotification(restTimerSeconds);
+      updateRestTimerNotification(restTimerSeconds);
 
       intervalRef.current = setInterval(() => {
         tickRestTimer();
+
+        const state = useWorkoutStore.getState();
+        if (state.restTimerActive && state.restTimerSeconds > 0) {
+          updateRestTimerNotification(state.restTimerSeconds);
+        } else if (!state.restTimerActive) {
+          // Timer hit zero — mark as natural completion so cleanup skips cancellation.
+          naturallyCompletedRef.current = true;
+        }
       }, 1000);
 
       Animated.timing(progressAnim, {
@@ -45,7 +59,13 @@ export default function RestTimer() {
         useNativeDriver: false,
       }).start();
     } else {
-      cancelRestEndNotification();
+      if (!naturallyCompletedRef.current) {
+        // User tapped Skip — cancel the scheduled end notification.
+        cancelRestEndNotification();
+      }
+      naturallyCompletedRef.current = false;
+
+      dismissRestTimerNotification();
 
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -58,7 +78,7 @@ export default function RestTimer() {
     };
   }, [restTimerActive]);
 
-  // When app comes back to foreground, resync the countdown from the stored end time
+  // When app comes back to foreground, resync the countdown from the stored end time.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       const prev = appStateRef.current;
@@ -71,7 +91,6 @@ export default function RestTimer() {
       ) {
         syncRestTimer();
 
-        // Restart the interval and re-sync animation from the corrected seconds value
         if (intervalRef.current) {
           clearInterval(intervalRef.current);
           intervalRef.current = null;
@@ -80,6 +99,8 @@ export default function RestTimer() {
         const total = useWorkoutStore.getState().restTimerTotal;
 
         if (remaining > 0) {
+          updateRestTimerNotification(remaining);
+
           progressAnim.stopAnimation();
           progressAnim.setValue(total > 0 ? remaining / total : 0);
           Animated.timing(progressAnim, {
@@ -90,6 +111,13 @@ export default function RestTimer() {
 
           intervalRef.current = setInterval(() => {
             tickRestTimer();
+
+            const state = useWorkoutStore.getState();
+            if (state.restTimerActive && state.restTimerSeconds > 0) {
+              updateRestTimerNotification(state.restTimerSeconds);
+            } else if (!state.restTimerActive) {
+              naturallyCompletedRef.current = true;
+            }
           }, 1000);
         }
       }

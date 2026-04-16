@@ -18,6 +18,8 @@ type Props = {
   visible: boolean;
   title?: string;
   initialDateYmd: string;
+  /** Pre-fill the weight input with this value (existing logged weight for the date). */
+  initialWeight?: number | null;
   /** When true, date is fixed to initialDateYmd (e.g. finish workout today). */
   lockDate?: boolean;
   /** Shown when lockDate (finish flow). */
@@ -31,6 +33,7 @@ export default function BodyWeightLogModal({
   visible,
   title = 'Log body weight',
   initialDateYmd,
+  initialWeight,
   lockDate = false,
   showSkip = false,
   onClose,
@@ -43,9 +46,9 @@ export default function BodyWeightLogModal({
   useEffect(() => {
     if (visible) {
       setDateStr(initialDateYmd);
-      setLbsStr('');
+      setLbsStr(initialWeight != null ? String(initialWeight) : '');
     }
-  }, [visible, initialDateYmd]);
+  }, [visible, initialDateYmd, initialWeight]);
 
   function handleSave() {
     const date = lockDate ? initialDateYmd.trim() : dateStr.trim();
@@ -93,6 +96,11 @@ export default function BodyWeightLogModal({
             placeholderTextColor={colors.placeholder}
             keyboardType="decimal-pad"
           />
+          {initialWeight != null && (
+            <Text style={styles.existingHint}>
+              Previously logged: {initialWeight} {WEIGHT_UNIT}
+            </Text>
+          )}
           <View style={styles.row}>
             <View style={styles.rowLeft}>
               {showSkip && onSkip ? (
@@ -164,4 +172,10 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   secondaryBtnText: { color: colors.textSecondary, fontSize: 15, fontWeight: '600' },
+  existingHint: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    marginTop: 4,
+    marginBottom: 4,
+  },
 });

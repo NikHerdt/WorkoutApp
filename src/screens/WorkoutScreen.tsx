@@ -15,7 +15,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors } from '../theme/colors';
 import { useWorkoutStore } from '../store/useWorkoutStore';
 import { HomeStackParamList } from '../navigation/AppNavigator';
-import { getExerciseById, getExercisesByWorkout, getLastSessionSetsForExercise, upsertBodyWeightForDate } from '../db/database';
+import { getExerciseById, getExercisesByWorkout, getLastSessionSetsForExercise, upsertBodyWeightForDate, getBodyWeightForDate } from '../db/database';
 import SetRow from '../components/SetRow';
 import RestTimer from '../components/RestTimer';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
@@ -386,6 +386,7 @@ export default function WorkoutScreen() {
         visible={bodyWeightModal}
         title="Body weight (optional)"
         initialDateYmd={toLocalDateYmd()}
+        initialWeight={getBodyWeightForDate(toLocalDateYmd())}
         lockDate
         showSkip
         onClose={() => setBodyWeightModal(false)}

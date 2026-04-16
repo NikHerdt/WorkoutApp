@@ -259,6 +259,7 @@ export default function HistoryScreen() {
         visible={weightModalOpen}
         title="Log body weight"
         initialDateYmd={weightModalDate}
+        initialWeight={weightModalDate.length >= 10 ? getBodyWeightForDate(weightModalDate) : null}
         lockDate={false}
         showSkip={false}
         onClose={() => setWeightModalOpen(false)}
