@@ -58,6 +58,7 @@ export function initDatabase(): void {
       phase_id INTEGER NOT NULL,
       started_at TEXT NOT NULL,
       completed_at TEXT,
+      workout_date TEXT,
       notes TEXT,
       FOREIGN KEY (workout_id) REFERENCES workouts(id)
     );
@@ -89,6 +90,7 @@ export function initDatabase(): void {
   `);
 
   migrateKgToLbs(database);
+  migrateAddWorkoutDate(database);
 
   const seeded = database.getFirstSync<{ value: string }>(
     "SELECT value FROM settings WHERE key = 'seeded'"
@@ -121,6 +123,34 @@ function migrateKgToLbs(database: SQLite.SQLiteDatabase): void {
 
   database.runSync('UPDATE set_logs SET weight = weight * ? WHERE weight > 0', [MIGRATION_KG_TO_LBS]);
   database.execSync('PRAGMA user_version = 2');
+}
+
+/**
+ * One-time: add workout_date (local YYYY-MM-DD) to workout_sessions and
+ * backfill existing rows from their UTC timestamps using device local time
+ * (user_version < 3).
+ */
+function migrateAddWorkoutDate(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  const v = verRow?.user_version ?? 0;
+  if (v >= 3) return;
+
+  const cols = database.getAllSync<{ name: string }>('PRAGMA table_info(workout_sessions)');
+  if (!cols.some((c) => c.name === 'workout_date')) {
+    database.execSync('ALTER TABLE workout_sessions ADD COLUMN workout_date TEXT');
+  }
+
+  // Backfill completed sessions first, then fall back to started_at for incomplete ones.
+  database.execSync(`
+    UPDATE workout_sessions
+      SET workout_date = date(datetime(completed_at, 'localtime'))
+      WHERE completed_at IS NOT NULL AND workout_date IS NULL;
+    UPDATE workout_sessions
+      SET workout_date = date(datetime(started_at, 'localtime'))
+      WHERE workout_date IS NULL;
+  `);
+
+  database.execSync('PRAGMA user_version = 3');
 }
 
 function seedDatabase(database: SQLite.SQLiteDatabase): void {
@@ -433,16 +463,16 @@ export function saveExercisesOrder(entries: { id: number; orderIndex: number }[]
 // Sessions
 export function createSession(workoutId: number, phaseId: number): number {
   const result = getDb().runSync(
-    'INSERT INTO workout_sessions (workout_id, phase_id, started_at) VALUES (?, ?, ?)',
-    [workoutId, phaseId, new Date().toISOString()]
+    'INSERT INTO workout_sessions (workout_id, phase_id, started_at, workout_date) VALUES (?, ?, ?, ?)',
+    [workoutId, phaseId, new Date().toISOString(), toLocalDateYmd()]
   );
   return result.lastInsertRowId;
 }
 
 export function completeSession(sessionId: number): void {
   getDb().runSync(
-    'UPDATE workout_sessions SET completed_at = ? WHERE id = ?',
-    [new Date().toISOString(), sessionId]
+    'UPDATE workout_sessions SET completed_at = ?, workout_date = ? WHERE id = ?',
+    [new Date().toISOString(), toLocalDateYmd(), sessionId]
   );
 }
 
@@ -851,4 +881,19 @@ export function getBodyWeightEntries(days: number): { date: string; lbs: number 
      ORDER BY logged_date ASC`,
     [`-${days} days`]
   );
+}
+
+/** Total volume (weight * reps, or reps for bodyweight) across all working sets in the last N days. */
+export function getTotalVolumeForDays(days: number): number {
+  const row = getDb().getFirstSync<{ total: number | null }>(
+    `SELECT SUM(CASE WHEN sl.weight > 0 THEN sl.weight * sl.reps ELSE sl.reps END) as total
+     FROM set_logs sl
+     JOIN workout_sessions ws ON sl.session_id = ws.id
+     WHERE ws.completed_at IS NOT NULL
+       AND ws.completed_at >= date('now', ?)
+       AND sl.set_type = 'working'
+       AND sl.reps > 0`,
+    [`-${days} days`]
+  );
+  return row?.total ?? 0;
 }

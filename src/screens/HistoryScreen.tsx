@@ -51,7 +51,7 @@ export default function HistoryScreen() {
 
     const marked: any = {};
     for (const session of recent) {
-      const date = session.completed_at.slice(0, 10);
+      const date = session.workout_date ?? session.completed_at.slice(0, 10);
       const color = DAY_COLORS[session.day_type] ?? '#888';
       marked[date] = {
         marked: true,
@@ -64,7 +64,7 @@ export default function HistoryScreen() {
 
   function handleDayPress(day: any) {
     const date = day.dateString;
-    const session = sessions.find((s) => s.completed_at.startsWith(date));
+    const session = sessions.find((s) => (s.workout_date ?? s.completed_at.slice(0, 10)) === date);
     if (session) {
       setSelectedSession(session);
       const sets = getSessionDetail(session.id);
@@ -118,7 +118,7 @@ export default function HistoryScreen() {
     );
   }
 
-  const sessionDateYmd = selectedSession?.completed_at?.slice(0, 10) ?? '';
+  const sessionDateYmd = selectedSession?.workout_date ?? selectedSession?.completed_at?.slice(0, 10) ?? '';
   const sessionBodyWeightLbs =
     sessionDateYmd.length >= 10 ? getBodyWeightForDate(sessionDateYmd) : null;
 
@@ -164,7 +164,7 @@ export default function HistoryScreen() {
           </View>
         ) : (
           sessions.slice(0, 20).map((session) => {
-            const date = session.completed_at.slice(0, 10);
+            const date = session.workout_date ?? session.completed_at.slice(0, 10);
             const color = DAY_COLORS[session.day_type] ?? colors.textSecondary;
             return (
               <TouchableOpacity
@@ -202,7 +202,7 @@ export default function HistoryScreen() {
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.modalTitle}>{selectedSession?.workout_name}</Text>
-                <Text style={styles.modalDate}>{selectedSession?.completed_at?.slice(0, 10)}</Text>
+                <Text style={styles.modalDate}>{selectedSession?.workout_date ?? selectedSession?.completed_at?.slice(0, 10)}</Text>
               </View>
               <View style={styles.modalHeaderActions}>
                 <TouchableOpacity

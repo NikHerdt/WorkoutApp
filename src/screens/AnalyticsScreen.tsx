@@ -24,6 +24,7 @@ import {
   getAvgSessionDurationMins,
   get1RMHistoryInRange,
   getBodyWeightEntries,
+  getTotalVolumeForDays,
 } from '../db/database';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -192,7 +193,21 @@ function dateToBucketKey(ymd: string, buckets: Bucket[]): string | null {
 function lineSpacingForN(n: number): number {
   const usable = PLOT_WIDTH - 24; // 12px initialSpacing + 12px endSpacing
   if (n <= 1) return usable;
-  return Math.max(8, usable / (n - 1));
+  return Math.max(2, Math.floor(usable / (n - 1)));
+}
+
+/**
+ * Down-sample an array to at most maxPoints entries, keeping first and last,
+ * so line charts stay readable and always fit within PLOT_WIDTH.
+ */
+function thinDataPoints<T>(data: T[], maxPoints: number): T[] {
+  if (data.length <= maxPoints) return data;
+  const result: T[] = [];
+  const step = (data.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i++) {
+    result.push(data[Math.round(i * step)]);
+  }
+  return result;
 }
 
 /** Build a grid of [week][dayIndex 0=Mon..6=Sun] cells for the heatmap. */
@@ -370,6 +385,16 @@ export default function AnalyticsScreen() {
   const [topExercise1RMs, setTopExercise1RMs] = useState<
     { name: string; data: { value: number; label: string }[]; color: string }[]
   >([]);
+  const [fatigueIndex, setFatigueIndex] = useState<number | null>(null);
+  const [relStrengthScores, setRelStrengthScores] = useState<
+    { name: string; estimated_1rm: number; ratio: number }[]
+  >([]);
+  const [strengthWeightRatio, setStrengthWeightRatio] = useState<{
+    strengthChangePct: number;
+    weightChangePct: number;
+    ratio: number | null;
+    topExerciseName: string;
+  } | null>(null);
 
   const TREND_COLORS = [colors.accent, colors.orange, '#A78BFA'];
 
@@ -423,8 +448,8 @@ export default function AnalyticsScreen() {
         }))
       );
 
-      // ── Body weight (up to the number of entries in range) ──
-      const bwLimit = Math.min(rangeDays, 60);
+      // ── Body weight (thinned to 30 points so chart always fits) ──
+      const bwLimit = Math.min(rangeDays, 30);
       const bwRows = getRecentBodyWeights(bwLimit).reverse();
       setBodyWeight(bwRows.map((r) => ({ value: r.weight_lbs, label: r.logged_date.slice(5) })));
 
@@ -457,17 +482,72 @@ export default function AnalyticsScreen() {
       const workoutDates = new Set(getWorkoutDatesInRange(rangeDays));
       setHeatmapGrid(buildHeatmapGrid(workoutDates, rangeDays));
 
-      // ── Top-3 exercise 1RM trends ──
+      // ── Top-3 exercise 1RM trends (thinned to 20 points so chart fits) ──
       const top3 = getTop1RMs(3);
       const trends = top3.map((ex, idx) => {
         const history = get1RMHistoryInRange(ex.exercise_id, rangeDays);
-        const data = history.map((h, hi) => ({
-          value: h.estimated_1rm,
-          label: hi === 0 || hi === history.length - 1 ? h.date.slice(5) : '',
+        const raw = history.map((h) => ({ value: h.estimated_1rm, label: h.date.slice(5) }));
+        const thinned = thinDataPoints(raw, 20);
+        const data = thinned.map((p, pi) => ({
+          value: p.value,
+          label: pi === 0 || pi === thinned.length - 1 ? p.label : '',
         }));
         return { name: ex.exercise_name, data, color: TREND_COLORS[idx] ?? colors.accent };
       });
       setTopExercise1RMs(trends.filter((t) => t.data.length > 1));
+
+      // ── Fatigue Index (Acute:Chronic Workload Ratio) ──
+      // AL = total volume last 7 days; CL = avg weekly volume over last 28 days
+      const vol7 = getTotalVolumeForDays(7);
+      const vol28 = getTotalVolumeForDays(28);
+      const chronicLoad = vol28 / 4;
+      setFatigueIndex(chronicLoad > 0 ? parseFloat((vol7 / chronicLoad).toFixed(2)) : null);
+
+      // ── Relative Strength Score (top lift 1RM / body weight) ──
+      const latestBW = getRecentBodyWeights(1);
+      const currentBW = latestBW[0]?.weight_lbs ?? 0;
+      if (currentBW > 0) {
+        const top5 = getTop1RMs(5);
+        setRelStrengthScores(
+          top5
+            .filter((ex) => ex.estimated_1rm > 0)
+            .map((ex) => ({
+              name: ex.exercise_name,
+              estimated_1rm: ex.estimated_1rm,
+              ratio: parseFloat((ex.estimated_1rm / currentBW).toFixed(2)),
+            }))
+        );
+      } else {
+        setRelStrengthScores([]);
+      }
+
+      // ── Strength Gain vs Weight Gain ──
+      const top1 = getTop1RMs(1)[0];
+      if (top1) {
+        const rmHistory = get1RMHistoryInRange(top1.exercise_id, rangeDays);
+        const bwHistory = getBodyWeightEntries(rangeDays);
+        if (rmHistory.length >= 2 && bwHistory.length >= 2) {
+          const start1RM = rmHistory[0].estimated_1rm;
+          const end1RM = rmHistory[rmHistory.length - 1].estimated_1rm;
+          const startBW = bwHistory[0].lbs;
+          const endBW = bwHistory[bwHistory.length - 1].lbs;
+          const strengthChangePct = ((end1RM - start1RM) / start1RM) * 100;
+          const weightChangePct = ((endBW - startBW) / startBW) * 100;
+          const ratio = Math.abs(weightChangePct) > 0.1
+            ? parseFloat((strengthChangePct / weightChangePct).toFixed(1))
+            : null;
+          setStrengthWeightRatio({
+            strengthChangePct: parseFloat(strengthChangePct.toFixed(1)),
+            weightChangePct: parseFloat(weightChangePct.toFixed(1)),
+            ratio,
+            topExerciseName: top1.exercise_name,
+          });
+        } else {
+          setStrengthWeightRatio(null);
+        }
+      } else {
+        setStrengthWeightRatio(null);
+      }
     }, [rangeDays])
   );
 
@@ -479,6 +559,20 @@ export default function AnalyticsScreen() {
   const hasHeatmap = heatmapGrid.some((w) => w.some((c) => c.hasWorkout));
   const hasOverlayBW = volBodyWeightData.bwPoints.some((p) => p.value > 0);
   const has1RMTrends = topExercise1RMs.length > 0;
+  const hasFatigueIndex = fatigueIndex !== null;
+  const hasRelStrength = relStrengthScores.length > 0;
+  const hasStrengthWeightRatio = strengthWeightRatio !== null;
+
+  const fatigueColor =
+    fatigueIndex === null ? colors.textSecondary
+    : fatigueIndex < 0.8 ? colors.blue
+    : fatigueIndex <= 1.3 ? '#34D399'
+    : colors.orange;
+  const fatigueStatusLabel =
+    fatigueIndex === null ? ''
+    : fatigueIndex < 0.8 ? 'Under-training — consider increasing volume'
+    : fatigueIndex <= 1.3 ? 'Optimal training zone'
+    : 'Overreaching — consider a rest day';
 
   const rangeLabel = RANGES.find((r) => r.days === rangeDays)?.label ?? '';
   const binLabel = (() => {
@@ -573,6 +667,7 @@ export default function AnalyticsScreen() {
               initialSpacing={8}
               endSpacing={8}
               showFractionalValues={false}
+              scrollToEnd
             />
           </View>
         </CollapsibleSection>
@@ -603,6 +698,7 @@ export default function AnalyticsScreen() {
               endSpacing={8}
               showFractionalValues={false}
               formatYLabel={(v) => formatVolume(Number(v))}
+              scrollToEnd
             />
           </View>
         </CollapsibleSection>
@@ -664,6 +760,7 @@ export default function AnalyticsScreen() {
               initialSpacing={12}
               endSpacing={12}
               hideDataPoints={bodyWeight.length > 20}
+              scrollToEnd
               pointerConfig={{
                 pointerStripColor: colors.orange,
                 pointerStripWidth: 1,
@@ -706,6 +803,7 @@ export default function AnalyticsScreen() {
                 spacing={lineSpacingForN(volBodyWeightData.volPoints.length)}
                 initialSpacing={12}
                 endSpacing={12}
+                scrollToEnd
                 color={colors.blue}
                 thickness={2}
                 dataPointsColor={colors.blue}
@@ -742,6 +840,7 @@ export default function AnalyticsScreen() {
                 spacing={lineSpacingForN(volBodyWeightData.bwPoints.length)}
                 initialSpacing={12}
                 endSpacing={12}
+                scrollToEnd
                 color={colors.orange}
                 thickness={2}
                 dataPointsColor={colors.orange}
@@ -800,6 +899,7 @@ export default function AnalyticsScreen() {
                   initialSpacing={12}
                   endSpacing={12}
                   hideDataPoints={ex.data.length > 15}
+                  scrollToEnd
                 />
               </View>
             </View>
@@ -859,6 +959,108 @@ export default function AnalyticsScreen() {
                 </View>
               </View>
             ))}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Fatigue Index */}
+      {hasFatigueIndex && (
+        <CollapsibleSection
+          title="Fatigue Index"
+          subtitle="Acute vs chronic training load (ACWR) — this week vs 4-week avg"
+        >
+          <View style={styles.card}>
+            <View style={styles.fatigueRow}>
+              <Text style={[styles.fatigueValue, { color: fatigueColor }]}>
+                {fatigueIndex!.toFixed(2)}
+              </Text>
+              <View style={styles.fatigueRight}>
+                <Text style={[styles.fatigueStatus, { color: fatigueColor }]}>
+                  {fatigueStatusLabel}
+                </Text>
+                <Text style={styles.fatigueZoneHint}>
+                  {'< 0.8 under  •  0.8 – 1.3 optimal  •  > 1.3 overreaching'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Relative Strength */}
+      {hasRelStrength && (
+        <CollapsibleSection
+          title="Relative Strength"
+          subtitle="Estimated 1RM as a multiple of current body weight"
+        >
+          <View style={styles.card}>
+            {relStrengthScores.map((ex, idx) => (
+              <View
+                key={ex.name}
+                style={[styles.relRow, idx < relStrengthScores.length - 1 && styles.prRowBorder]}
+              >
+                <Text style={styles.relName} numberOfLines={1}>{ex.name}</Text>
+                <View style={styles.relRight}>
+                  <Text style={styles.relRatio}>{ex.ratio.toFixed(2)}x BW</Text>
+                  <Text style={styles.relWeight}>{ex.estimated_1rm} {WEIGHT_UNIT}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Strength Gain vs Weight Gain */}
+      {hasStrengthWeightRatio && (
+        <CollapsibleSection
+          title="Strength vs Weight Gain"
+          subtitle={`${strengthWeightRatio!.topExerciseName} — last ${rangeDays} days`}
+        >
+          <View style={styles.card}>
+            <View style={styles.swRow}>
+              <View style={styles.swStat}>
+                <Text style={styles.swLabel}>Strength</Text>
+                <Text style={[
+                  styles.swValue,
+                  { color: strengthWeightRatio!.strengthChangePct >= 0 ? '#34D399' : colors.orange },
+                ]}>
+                  {strengthWeightRatio!.strengthChangePct >= 0 ? '+' : ''}
+                  {strengthWeightRatio!.strengthChangePct}%
+                </Text>
+              </View>
+              <View style={styles.swDivider} />
+              <View style={styles.swStat}>
+                <Text style={styles.swLabel}>Body Weight</Text>
+                <Text style={[
+                  styles.swValue,
+                  { color: colors.textSecondary },
+                ]}>
+                  {strengthWeightRatio!.weightChangePct >= 0 ? '+' : ''}
+                  {strengthWeightRatio!.weightChangePct}%
+                </Text>
+              </View>
+              {strengthWeightRatio!.ratio !== null && (
+                <>
+                  <View style={styles.swDivider} />
+                  <View style={styles.swStat}>
+                    <Text style={styles.swLabel}>Ratio</Text>
+                    <Text style={[styles.swValue, { color: colors.accent }]}>
+                      {strengthWeightRatio!.ratio > 0 ? '+' : ''}
+                      {strengthWeightRatio!.ratio}x
+                    </Text>
+                  </View>
+                </>
+              )}
+            </View>
+            {strengthWeightRatio!.ratio !== null && (
+              <Text style={styles.swCaption}>
+                {strengthWeightRatio!.ratio > 1
+                  ? `Strength improving ${strengthWeightRatio!.ratio}x faster than weight is changing`
+                  : strengthWeightRatio!.ratio < 0
+                  ? 'Losing strength while body weight changes — consider adjusting training'
+                  : 'Weight changing faster than strength — monitor recovery'}
+              </Text>
+            )}
           </View>
         </CollapsibleSection>
       )}
@@ -1100,4 +1302,44 @@ const styles = StyleSheet.create({
   prRight: { alignItems: 'flex-end' },
   prWeight: { color: colors.accent, fontSize: 14, fontWeight: '700' },
   pr1rm: { color: colors.textSecondary, fontSize: 11, marginTop: 2 },
+
+  // Fatigue Index
+  fatigueRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 12, gap: 16 },
+  fatigueValue: { fontSize: 36, fontWeight: '800', minWidth: 72 },
+  fatigueRight: { flex: 1 },
+  fatigueStatus: { fontSize: 13, fontWeight: '600', marginBottom: 4 },
+  fatigueZoneHint: { color: colors.textTertiary, fontSize: 11 },
+
+  // Relative Strength
+  relRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  relName: { color: colors.text, fontSize: 14, fontWeight: '500', flex: 1, marginRight: 8 },
+  relRight: { alignItems: 'flex-end' },
+  relRatio: { color: colors.accent, fontSize: 15, fontWeight: '700' },
+  relWeight: { color: colors.textSecondary, fontSize: 11, marginTop: 2 },
+
+  // Strength vs Weight Gain
+  swRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  swStat: { flex: 1, alignItems: 'center' },
+  swLabel: { color: colors.textTertiary, fontSize: 10, fontWeight: '600', textTransform: 'uppercase', marginBottom: 4 },
+  swValue: { fontSize: 22, fontWeight: '800' },
+  swDivider: { width: 1, backgroundColor: colors.border, marginHorizontal: 4 },
+  swCaption: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    textAlign: 'center',
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    lineHeight: 17,
+  },
 });
