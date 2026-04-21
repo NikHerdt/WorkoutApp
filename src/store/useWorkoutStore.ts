@@ -14,12 +14,65 @@ import {
   upsertPhaseSubstitution,
 } from '../db/database';
 import { SCHEDULE, DayType, ActiveSet, ActiveExerciseState } from '../types';
-import { resolveWeekRollover } from '../data/programWeeks';
+import { getWeekCountForPhase } from '../data/programWeeks';
 import {
   buildWarmupPresets,
   parseWorkingRepsFromTarget,
   applyWarmupPresetsToIncompleteWarmups,
 } from '../utils/warmupSets';
+import { toLocalDateYmd } from '../utils/dateLocal';
+
+function parseYmdLocal(ymd: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return null;
+  return new Date(y, mo - 1, d, 12, 0, 0, 0);
+}
+
+function addDaysLocal(ymd: string, deltaDays: number): string {
+  const base = parseYmdLocal(ymd) ?? new Date();
+  base.setDate(base.getDate() + deltaDays);
+  return toLocalDateYmd(base);
+}
+
+function resolveProgramProgress(programStartYmd: string): {
+  scheduleDay: number;
+  currentPhaseId: number;
+  phaseWeek: number;
+} {
+  const start = parseYmdLocal(programStartYmd) ?? new Date();
+  const today = parseYmdLocal(toLocalDateYmd()) ?? new Date();
+  const elapsedDays = Math.max(0, Math.floor((today.getTime() - start.getTime()) / 86400000));
+  const scheduleDay = elapsedDays % 7;
+  const elapsedProgramWeeks = Math.floor(elapsedDays / 7);
+
+  const phase1Weeks = getWeekCountForPhase(1);
+  const phase2Weeks = getWeekCountForPhase(2);
+  const phase3Weeks = getWeekCountForPhase(3);
+  const totalProgramWeeks = Math.max(1, phase1Weeks + phase2Weeks + phase3Weeks);
+  let cycleWeek = elapsedProgramWeeks % totalProgramWeeks;
+
+  if (cycleWeek < phase1Weeks) {
+    return { scheduleDay, currentPhaseId: 1, phaseWeek: cycleWeek + 1 };
+  }
+  cycleWeek -= phase1Weeks;
+
+  if (cycleWeek < phase2Weeks) {
+    return { scheduleDay, currentPhaseId: 2, phaseWeek: cycleWeek + 1 };
+  }
+  cycleWeek -= phase2Weeks;
+
+  return { scheduleDay, currentPhaseId: 3, phaseWeek: cycleWeek + 1 };
+}
+
+function getCompletedWeeksBeforePhase(phaseId: number): number {
+  if (phaseId <= 1) return 0;
+  if (phaseId === 2) return getWeekCountForPhase(1);
+  return getWeekCountForPhase(1) + getWeekCountForPhase(2);
+}
 
 function renumberSets(sets: ActiveSet[]): ActiveSet[] {
   let warmupIdx = 0;
@@ -92,6 +145,8 @@ interface WorkoutState {
   currentPhaseId: number;
   /** 1-based week within the current phase (Excel week count per phase). */
   phaseWeek: number;
+  /** Local YYYY-MM-DD marking Day 1 / Week 1 / Phase 1 anchor date. */
+  programStartDate: string;
 
   // Active workout session
   activeSessionId: number | null;
@@ -141,6 +196,7 @@ interface WorkoutState {
   /** Removes an exercise from the active session by index. Stops the rest timer. */
   removeExerciseFromSession: (exerciseIndex: number) => void;
   setRestTimerEnabled: (enabled: boolean) => void;
+  setProgramStartDate: (ymd: string) => boolean;
   startRestTimer: (seconds: number) => void;
   stopRestTimer: () => void;
   setRestTimerMinimized: (minimized: boolean) => void;
@@ -152,6 +208,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   scheduleDay: 0,
   currentPhaseId: 1,
   phaseWeek: 1,
+  programStartDate: toLocalDateYmd(),
   activeSessionId: null,
   activeWorkoutId: null,
   activeWorkoutName: '',
@@ -166,17 +223,43 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   restTimerEndTime: null,
 
   loadSettings: () => {
-    const dayStr = getSetting('schedule_day');
-    const phaseStr = getSetting('current_phase_id');
-    const weekStr = getSetting('phase_week');
     const restTimerEnabledStr = getSetting('rest_timer_enabled');
-    const phaseId = phaseStr ? parseInt(phaseStr, 10) : 1;
-    const week = weekStr ? parseInt(weekStr, 10) : 1;
+    const migrationV2Done = getSetting('program_start_date_migrated_v2') === '1';
+    const legacyDayStr = getSetting('schedule_day');
+    const legacyPhaseStr = getSetting('current_phase_id');
+    const legacyWeekStr = getSetting('phase_week');
+    const legacyDay = legacyDayStr ? parseInt(legacyDayStr, 10) : 0;
+    const legacyPhase = legacyPhaseStr ? parseInt(legacyPhaseStr, 10) : 1;
+    const legacyWeek = legacyWeekStr ? parseInt(legacyWeekStr, 10) : 1;
+    const safeDay = Number.isFinite(legacyDay) ? ((legacyDay % 7) + 7) % 7 : 0;
+    const safePhase = Number.isFinite(legacyPhase) ? Math.min(3, Math.max(1, legacyPhase)) : 1;
+    const maxWeekInPhase = getWeekCountForPhase(safePhase);
+    const safeWeek = Number.isFinite(legacyWeek)
+      ? Math.min(maxWeekInPhase, Math.max(1, legacyWeek))
+      : 1;
+    const completedWeeksBeforeCurrentPhase = getCompletedWeeksBeforePhase(safePhase);
+    const totalCompletedWeeks = completedWeeksBeforeCurrentPhase + (safeWeek - 1);
+    const elapsedDays = totalCompletedWeeks * 7 + safeDay;
+    const legacyDerivedStart = addDaysLocal(toLocalDateYmd(), -elapsedDays);
+
+    let programStartDate = getSetting('program_start_date');
+    if (!programStartDate) {
+      programStartDate = legacyDerivedStart;
+      setSetting('program_start_date', programStartDate);
+      setSetting('program_start_date_migrated_v2', '1');
+    } else if (!migrationV2Done) {
+      // One-time correction for installs that got the initial day-only anchor migration.
+      programStartDate = legacyDerivedStart;
+      setSetting('program_start_date', programStartDate);
+      setSetting('program_start_date_migrated_v2', '1');
+    }
+    const progress = resolveProgramProgress(programStartDate);
     set({
-      scheduleDay: dayStr ? parseInt(dayStr, 10) : 0,
-      currentPhaseId: phaseId,
-      phaseWeek: Number.isFinite(week) && week >= 1 ? week : 1,
-      pendingSubstitutions: getPhaseSubstitutionsForPhase(phaseId),
+      scheduleDay: progress.scheduleDay,
+      currentPhaseId: progress.currentPhaseId,
+      phaseWeek: progress.phaseWeek,
+      programStartDate,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
       restTimerEnabled: restTimerEnabledStr === null ? true : restTimerEnabledStr === '1',
     });
   },
@@ -219,7 +302,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   finishWorkout: () => {
-    const { activeSessionId, activeExercises, scheduleDay, currentPhaseId, phaseWeek } = get();
+    const { activeSessionId, activeExercises } = get();
     if (!activeSessionId) return;
 
     // Log all completed sets
@@ -240,20 +323,6 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
 
     completeSession(activeSessionId);
 
-    const prevDay = scheduleDay;
-    const newDay = (scheduleDay + 1) % 7;
-    setSetting('schedule_day', String(newDay));
-
-    let nextPhaseId = currentPhaseId;
-    let nextPhaseWeek = phaseWeek;
-    if (prevDay === 6 && newDay === 0) {
-      const rolled = resolveWeekRollover(currentPhaseId, phaseWeek);
-      nextPhaseId = rolled.currentPhaseId;
-      nextPhaseWeek = rolled.phaseWeek;
-      setSetting('current_phase_id', String(nextPhaseId));
-      setSetting('phase_week', String(nextPhaseWeek));
-    }
-
     set({
       activeSessionId: null,
       activeWorkoutId: null,
@@ -263,10 +332,6 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       restTimerActive: false,
       restTimerMinimized: false,
       restTimerEndTime: null,
-      scheduleDay: newDay,
-      currentPhaseId: nextPhaseId,
-      phaseWeek: nextPhaseWeek,
-      pendingSubstitutions: getPhaseSubstitutionsForPhase(nextPhaseId),
     });
   },
 
@@ -290,42 +355,50 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   skipRestDay: () => {
-    const { scheduleDay, currentPhaseId, phaseWeek } = get();
-    const prevDay = scheduleDay;
-    const newDay = (scheduleDay + 1) % 7;
-    setSetting('schedule_day', String(newDay));
-
-    let nextPhaseId = currentPhaseId;
-    let nextPhaseWeek = phaseWeek;
-    if (prevDay === 6 && newDay === 0) {
-      const rolled = resolveWeekRollover(currentPhaseId, phaseWeek);
-      nextPhaseId = rolled.currentPhaseId;
-      nextPhaseWeek = rolled.phaseWeek;
-      setSetting('current_phase_id', String(nextPhaseId));
-      setSetting('phase_week', String(nextPhaseWeek));
-    }
-
+    const { programStartDate } = get();
+    const nextStart = addDaysLocal(programStartDate, -1);
+    setSetting('program_start_date', nextStart);
+    const progress = resolveProgramProgress(nextStart);
     set({
-      scheduleDay: newDay,
-      currentPhaseId: nextPhaseId,
-      phaseWeek: nextPhaseWeek,
-      pendingSubstitutions: getPhaseSubstitutionsForPhase(nextPhaseId),
+      scheduleDay: progress.scheduleDay,
+      currentPhaseId: progress.currentPhaseId,
+      phaseWeek: progress.phaseWeek,
+      programStartDate: nextStart,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
     });
   },
 
   setScheduleDay: (dayIndex: number) => {
     const d = ((Math.floor(dayIndex) % 7) + 7) % 7;
-    setSetting('schedule_day', String(d));
-    set({ scheduleDay: d });
+    const currentDay = get().scheduleDay % 7;
+    const delta = currentDay - d;
+    const nextStart = addDaysLocal(get().programStartDate, delta);
+    setSetting('program_start_date', nextStart);
+    const progress = resolveProgramProgress(nextStart);
+    set({
+      scheduleDay: progress.scheduleDay,
+      currentPhaseId: progress.currentPhaseId,
+      phaseWeek: progress.phaseWeek,
+      programStartDate: nextStart,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
+    });
   },
 
   setPhase: (phaseId: number) => {
-    setSetting('current_phase_id', String(phaseId));
-    setSetting('phase_week', '1');
+    const weekOffsetToPhaseStart =
+      (phaseId <= 1 ? 0 : getWeekCountForPhase(1)) +
+      (phaseId <= 2 ? 0 : getWeekCountForPhase(2));
+    const today = toLocalDateYmd();
+    const dayIndex = get().scheduleDay % 7;
+    const start = addDaysLocal(today, -(weekOffsetToPhaseStart * 7 + dayIndex));
+    setSetting('program_start_date', start);
+    const progress = resolveProgramProgress(start);
     set({
-      currentPhaseId: phaseId,
-      phaseWeek: 1,
-      pendingSubstitutions: getPhaseSubstitutionsForPhase(phaseId),
+      scheduleDay: progress.scheduleDay,
+      currentPhaseId: progress.currentPhaseId,
+      phaseWeek: progress.phaseWeek,
+      programStartDate: start,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
     });
   },
 
@@ -359,6 +432,15 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   completeSet: (exerciseIndex, setIndex, restSeconds) => {
+    const stateBeforeComplete = get();
+    const isTargetAlreadyCompleted =
+      stateBeforeComplete.activeExercises[exerciseIndex]?.sets[setIndex]?.completed ?? false;
+    const incompleteSetCount = stateBeforeComplete.activeExercises.reduce(
+      (count, exercise) => count + exercise.sets.filter((s) => !s.completed).length,
+      0
+    );
+    const isLastRemainingSet = !isTargetAlreadyCompleted && incompleteSetCount === 1;
+
     set((state) => {
       const exercises = [...state.activeExercises];
       const sets = [...exercises[exerciseIndex].sets];
@@ -385,7 +467,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       return { activeExercises: exercises };
     });
 
-    if (restSeconds > 0 && get().restTimerEnabled) {
+    if (restSeconds > 0 && get().restTimerEnabled && !isLastRemainingSet) {
       get().startRestTimer(restSeconds);
     }
   },
@@ -501,6 +583,32 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
         restTimerEndTime: null,
       });
     }
+  },
+
+  setProgramStartDate: (ymd) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+    if (!m) return false;
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return false;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+
+    const normalized = `${String(y).padStart(4, '0')}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const parsed = parseYmdLocal(normalized);
+    if (!parsed || Number.isNaN(parsed.getTime())) return false;
+
+    setSetting('program_start_date', normalized);
+    setSetting('program_start_date_migrated_v2', '1');
+    const progress = resolveProgramProgress(normalized);
+    set({
+      scheduleDay: progress.scheduleDay,
+      currentPhaseId: progress.currentPhaseId,
+      phaseWeek: progress.phaseWeek,
+      programStartDate: normalized,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
+    });
+    return true;
   },
 
   startRestTimer: (seconds) => {

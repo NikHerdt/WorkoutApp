@@ -97,7 +97,12 @@ export default function HomeScreen() {
     refreshTodayExercises();
   }, [scheduleDay, currentPhaseId, refreshTodayExercises]);
 
-  useFocusEffect(refreshTodayExercises);
+  useFocusEffect(
+    useCallback(() => {
+      loadSettings();
+      refreshTodayExercises();
+    }, [loadSettings, refreshTodayExercises])
+  );
 
   useEffect(() => {
     setSchedulePreviewDayIndex(null);
@@ -212,7 +217,7 @@ export default function HomeScreen() {
               <Text style={[styles.dayBadgeText, { color: accentColor }]}>
                 Day {(scheduleDay % 7) + 1}/7
               </Text>
-              <Text style={[styles.dayBadgeHint, { color: accentColor }]}>Tap to change</Text>
+              <Text style={[styles.dayBadgeHint, { color: accentColor }]}>Tap to adjust start</Text>
             </TouchableOpacity>
           </View>
 
@@ -341,8 +346,7 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
           <Text style={styles.weekTapHint}>
-            Tap a day to preview exercises. Each Next week step assumes you complete one full 7-day program cycle (when
-            your program day wraps from the last slot back to the first).
+            Tap a day to preview exercises. Next week previews follow your calendar-based program timeline.
           </Text>
           {scheduleWeekOffset > 0 ? (
             <Text style={styles.weekPreviewPhaseHint}>
@@ -483,8 +487,7 @@ export default function HomeScreen() {
           <View style={styles.scheduleModalSheet}>
             <Text style={styles.scheduleModalTitle}>Program day</Text>
             <Text style={styles.scheduleModalHint}>
-              Choose which day of your 7-day split is active today. Finishing a workout advances this automatically
-              (for example, use this if you deleted a session and want to repeat that day).
+              Adjust which split day should map to today by shifting your program start date anchor.
             </Text>
             {SCHEDULE.map((type, i) => {
               const active = (scheduleDay % 7) === i;

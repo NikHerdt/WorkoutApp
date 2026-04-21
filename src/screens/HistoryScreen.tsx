@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Modal,
   Alert,
+  TextInput,
 } from 'react-native';
 import { Calendar } from 'react-native-calendars';
 import { useFocusEffect } from '@react-navigation/native';
@@ -21,6 +22,7 @@ import {
 import BodyWeightLogModal from '../components/BodyWeightLogModal';
 import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { toLocalDateYmd } from '../utils/dateLocal';
+import { useWorkoutStore } from '../store/useWorkoutStore';
 
 const DAY_COLORS: Record<string, string> = {
   push: '#FF6B35',
@@ -31,6 +33,8 @@ const DAY_COLORS: Record<string, string> = {
 };
 
 export default function HistoryScreen() {
+  const programStartDate = useWorkoutStore((s) => s.programStartDate);
+  const setProgramStartDate = useWorkoutStore((s) => s.setProgramStartDate);
   const [sessions, setSessions] = useState<any[]>([]);
   const [markedDates, setMarkedDates] = useState<any>({});
   const [selectedSession, setSelectedSession] = useState<any>(null);
@@ -38,6 +42,8 @@ export default function HistoryScreen() {
   const [showDetail, setShowDetail] = useState(false);
   const [weightModalOpen, setWeightModalOpen] = useState(false);
   const [weightModalDate, setWeightModalDate] = useState(toLocalDateYmd());
+  const [programStartModalOpen, setProgramStartModalOpen] = useState(false);
+  const [programStartDraft, setProgramStartDraft] = useState('');
 
   useFocusEffect(
     useCallback(() => {
@@ -118,6 +124,21 @@ export default function HistoryScreen() {
     );
   }
 
+  function openProgramStartModal() {
+    setProgramStartDraft(programStartDate || toLocalDateYmd());
+    setProgramStartModalOpen(true);
+  }
+
+  function handleSaveProgramStartDate() {
+    const next = programStartDraft.trim();
+    const ok = setProgramStartDate(next);
+    if (!ok) {
+      Alert.alert('Invalid date', 'Enter a valid date in YYYY-MM-DD format.');
+      return;
+    }
+    setProgramStartModalOpen(false);
+  }
+
   const sessionDateYmd = selectedSession?.workout_date ?? selectedSession?.completed_at?.slice(0, 10) ?? '';
   const sessionBodyWeightLbs =
     sessionDateYmd.length >= 10 ? getBodyWeightForDate(sessionDateYmd) : null;
@@ -127,6 +148,10 @@ export default function HistoryScreen() {
       <TouchableOpacity style={styles.logWeightBanner} onPress={() => openWeightModal(toLocalDateYmd())}>
         <Text style={styles.logWeightBannerText}>Log body weight</Text>
         <Text style={styles.logWeightBannerHint}>Tap to add or update an entry ({WEIGHT_UNIT})</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.programStartBanner} onPress={openProgramStartModal}>
+        <Text style={styles.programStartBannerText}>Program start date</Text>
+        <Text style={styles.programStartBannerHint}>Current: {programStartDate} · Tap to change</Text>
       </TouchableOpacity>
 
       <Calendar
@@ -269,6 +294,48 @@ export default function HistoryScreen() {
           loadSessions();
         }}
       />
+
+      <Modal
+        visible={programStartModalOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setProgramStartModalOpen(false)}
+      >
+        <View style={styles.dateModalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setProgramStartModalOpen(false)}
+          />
+          <View style={styles.dateModalCard}>
+            <Text style={styles.dateModalTitle}>Set program start date</Text>
+            <Text style={styles.dateModalHint}>
+              Use YYYY-MM-DD. This controls day/week/phase progression timeline.
+            </Text>
+            <TextInput
+              value={programStartDraft}
+              onChangeText={setProgramStartDraft}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="numbers-and-punctuation"
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={colors.textTertiary}
+              style={styles.dateInput}
+            />
+            <View style={styles.dateModalActions}>
+              <TouchableOpacity
+                style={styles.dateModalCancelButton}
+                onPress={() => setProgramStartModalOpen(false)}
+              >
+                <Text style={styles.dateModalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.dateModalSaveButton} onPress={handleSaveProgramStartDate}>
+                <Text style={styles.dateModalSaveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -285,6 +352,15 @@ const styles = StyleSheet.create({
   },
   logWeightBannerText: { color: colors.text, fontSize: 15, fontWeight: '700' },
   logWeightBannerHint: { color: colors.textTertiary, fontSize: 12, marginTop: 2 },
+  programStartBanner: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: colors.surfaceElevated,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  programStartBannerText: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  programStartBannerHint: { color: colors.textTertiary, fontSize: 12, marginTop: 2 },
 
   calendar: {
     borderBottomWidth: 1,
@@ -426,4 +502,69 @@ const styles = StyleSheet.create({
   modalSetData: { color: colors.text, fontSize: 14, flex: 1 },
   modalWarmupText: { color: colors.warmupText },
   modalVolume: { color: colors.textTertiary, fontSize: 12 },
+  dateModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  dateModalCard: {
+    width: '100%',
+    maxWidth: 440,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: 16,
+  },
+  dateModalTitle: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  dateModalHint: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginTop: 6,
+  },
+  dateInput: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+    color: colors.text,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+  },
+  dateModalActions: {
+    marginTop: 14,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  dateModalCancelButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+  },
+  dateModalCancelText: {
+    color: colors.textSecondary,
+    fontWeight: '600',
+  },
+  dateModalSaveButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: colors.accent,
+  },
+  dateModalSaveText: {
+    color: '#000',
+    fontWeight: '700',
+  },
 });
