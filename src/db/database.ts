@@ -460,6 +460,53 @@ export function saveExercisesOrder(entries: { id: number; orderIndex: number }[]
   }
 }
 
+/** Duplicate an exercise's programming fields into a workout as a new slot. */
+export function addExerciseToWorkoutFromSource(workoutId: number, sourceExerciseId: number): number {
+  const source = getExerciseById(sourceExerciseId);
+  if (!source) {
+    throw new Error('Source exercise not found');
+  }
+  const maxOrder = getDb().getFirstSync<{ max_order: number | null }>(
+    'SELECT MAX(order_index) as max_order FROM exercises WHERE workout_id = ?',
+    [workoutId]
+  );
+  const nextOrder = (maxOrder?.max_order ?? -1) + 1;
+  const result = getDb().runSync(
+    `INSERT INTO exercises
+       (workout_id, name, order_index, warmup_sets, working_sets, target_reps,
+        target_rpe, rest_seconds, notes, muscle_group, is_superset, superset_group, is_custom)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      workoutId,
+      source.name,
+      nextOrder,
+      source.warmup_sets ?? 0,
+      source.working_sets ?? 1,
+      source.target_reps ?? '',
+      source.target_rpe ?? '',
+      source.rest_seconds ?? 90,
+      source.notes ?? '',
+      source.muscle_group ?? '',
+      source.is_superset ?? 0,
+      source.superset_group ?? null,
+      source.is_custom ?? 0,
+    ]
+  );
+  return result.lastInsertRowId;
+}
+
+/** Remove an exercise row from a workout and compact the remaining order_index values. */
+export function removeExerciseFromWorkout(exerciseId: number): void {
+  const row = getDb().getFirstSync<{ workout_id: number | null }>(
+    'SELECT workout_id FROM exercises WHERE id = ?',
+    [exerciseId]
+  );
+  if (!row?.workout_id) return;
+  getDb().runSync('DELETE FROM exercises WHERE id = ?', [exerciseId]);
+  const remaining = getExercisesByWorkout(row.workout_id) as { id: number }[];
+  saveExercisesOrder(remaining.map((ex, index) => ({ id: ex.id, orderIndex: index })));
+}
+
 // Sessions
 export function createSession(workoutId: number, phaseId: number): number {
   const result = getDb().runSync(

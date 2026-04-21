@@ -13,7 +13,12 @@ import {
   getExercisesByWorkout,
   updateExerciseSetCounts,
   saveExercisesOrder,
+  getExerciseById,
+  addExerciseToWorkoutFromSource,
+  removeExerciseFromWorkout,
 } from '../db/database';
+import { useWorkoutStore } from '../store/useWorkoutStore';
+import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import type { HomeStackParamList } from '../navigation/AppNavigator';
 
 type Route = RouteProp<HomeStackParamList, 'EditWorkout'>;
@@ -27,10 +32,18 @@ interface ExerciseRow {
   order_index: number;
 }
 
+interface DisplayExerciseRow extends ExerciseRow {
+  displayId: number;
+  displayName: string;
+  displayMuscleGroup: string;
+}
+
 export default function EditWorkoutScreen() {
   const route = useRoute<Route>();
   const { workoutId } = route.params;
+  const pendingSubstitutions = useWorkoutStore((s) => s.pendingSubstitutions);
   const [exercises, setExercises] = useState<ExerciseRow[]>([]);
+  const [showAddExerciseModal, setShowAddExerciseModal] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -40,18 +53,23 @@ export default function EditWorkoutScreen() {
   );
 
   function adjustSets(
-    exerciseId: number,
+    templateExerciseId: number,
+    selectedExerciseId: number,
     field: 'warmup_sets' | 'working_sets',
     delta: number
   ) {
     setExercises((prev) => {
       const next = prev.map((ex) => {
-        if (ex.id !== exerciseId) return ex;
+        if (ex.id !== templateExerciseId) return ex;
         const updated = {
           ...ex,
           [field]: Math.max(field === 'working_sets' ? 1 : 0, ex[field] + delta),
         };
+        // Keep slot defaults in sync, and also update the currently selected substitution if one is active.
         updateExerciseSetCounts(updated.id, updated.warmup_sets, updated.working_sets);
+        if (selectedExerciseId !== updated.id) {
+          updateExerciseSetCounts(selectedExerciseId, updated.warmup_sets, updated.working_sets);
+        }
         return updated;
       });
       return next;
@@ -80,97 +98,151 @@ export default function EditWorkoutScreen() {
     });
   }
 
-  if (exercises.length === 0) {
-    return (
-      <View style={styles.empty}>
-        <Text style={styles.emptyText}>No exercises in this workout.</Text>
-      </View>
+  function handleRemoveExercise(exerciseId: number, name: string) {
+    Alert.alert(
+      'Remove exercise?',
+      `Remove ${name} from this day?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            removeExerciseFromWorkout(exerciseId);
+            const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
+            setExercises(rows);
+          },
+        },
+      ]
     );
   }
 
+  const displayExercises: DisplayExerciseRow[] = exercises.map((ex) => {
+    const selectedId = pendingSubstitutions[ex.id] ?? ex.id;
+    const selected = selectedId === ex.id ? ex : getExerciseById(selectedId);
+    return {
+      ...ex,
+      displayId: selected?.id ?? ex.id,
+      displayName: selected?.name ?? ex.name,
+      displayMuscleGroup: selected?.muscle_group ?? ex.muscle_group,
+    };
+  });
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.hint}>
-        Changes apply to future workouts. Drag order with the arrows. Tap +/- to adjust set counts.
-      </Text>
+    <>
+      {exercises.length === 0 ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>No exercises in this workout yet.</Text>
+          <TouchableOpacity style={styles.addEmptyButton} onPress={() => setShowAddExerciseModal(true)}>
+            <Text style={styles.addEmptyButtonText}>Add exercise</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+          <Text style={styles.hint}>
+            Changes apply to future workouts. This edits the currently selected exercise for each slot. Use arrows to reorder, +/- for sets, and remove/add to change this day.
+          </Text>
 
-      {exercises.map((ex, index) => (
-        <View key={ex.id} style={styles.card}>
-          {/* Order arrows */}
-          <View style={styles.orderCol}>
-            <TouchableOpacity
-              style={[styles.arrowBtn, index === 0 && styles.arrowBtnDisabled]}
-              onPress={() => moveUp(index)}
-              disabled={index === 0}
-            >
-              <Text style={styles.arrowText}>▲</Text>
-            </TouchableOpacity>
-            <Text style={styles.orderNum}>{index + 1}</Text>
-            <TouchableOpacity
-              style={[styles.arrowBtn, index === exercises.length - 1 && styles.arrowBtnDisabled]}
-              onPress={() => moveDown(index)}
-              disabled={index === exercises.length - 1}
-            >
-              <Text style={styles.arrowText}>▼</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity style={styles.addButton} onPress={() => setShowAddExerciseModal(true)}>
+            <Text style={styles.addButtonText}>+ Add exercise</Text>
+          </TouchableOpacity>
 
-          {/* Exercise info + set counts */}
-          <View style={styles.body}>
-            <Text style={styles.exerciseName} numberOfLines={1}>
-              {ex.name}
-            </Text>
-            <Text style={styles.muscleGroup}>{ex.muscle_group}</Text>
-
-            <View style={styles.setRows}>
-              {/* Warmup sets */}
-              <View style={styles.setRow}>
-                <Text style={styles.setLabel}>Warmup sets</Text>
-                <View style={styles.stepper}>
-                  <TouchableOpacity
-                    style={[styles.stepBtn, ex.warmup_sets <= 0 && styles.stepBtnDisabled]}
-                    onPress={() => adjustSets(ex.id, 'warmup_sets', -1)}
-                    disabled={ex.warmup_sets <= 0}
-                  >
-                    <Text style={styles.stepBtnText}>−</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.stepValue}>{ex.warmup_sets}</Text>
-                  <TouchableOpacity
-                    style={styles.stepBtn}
-                    onPress={() => adjustSets(ex.id, 'warmup_sets', 1)}
-                  >
-                    <Text style={styles.stepBtnText}>+</Text>
-                  </TouchableOpacity>
-                </View>
+          {displayExercises.map((ex, index) => (
+            <View key={ex.id} style={styles.card}>
+              {/* Order arrows */}
+              <View style={styles.orderCol}>
+                <TouchableOpacity
+                  style={[styles.arrowBtn, index === 0 && styles.arrowBtnDisabled]}
+                  onPress={() => moveUp(index)}
+                  disabled={index === 0}
+                >
+                  <Text style={styles.arrowText}>▲</Text>
+                </TouchableOpacity>
+                <Text style={styles.orderNum}>{index + 1}</Text>
+                <TouchableOpacity
+                  style={[styles.arrowBtn, index === exercises.length - 1 && styles.arrowBtnDisabled]}
+                  onPress={() => moveDown(index)}
+                  disabled={index === exercises.length - 1}
+                >
+                  <Text style={styles.arrowText}>▼</Text>
+                </TouchableOpacity>
               </View>
 
-              {/* Working sets */}
-              <View style={styles.setRow}>
-                <Text style={styles.setLabel}>Working sets</Text>
-                <View style={styles.stepper}>
-                  <TouchableOpacity
-                    style={[styles.stepBtn, ex.working_sets <= 1 && styles.stepBtnDisabled]}
-                    onPress={() => adjustSets(ex.id, 'working_sets', -1)}
-                    disabled={ex.working_sets <= 1}
-                  >
-                    <Text style={styles.stepBtnText}>−</Text>
-                  </TouchableOpacity>
-                  <Text style={styles.stepValue}>{ex.working_sets}</Text>
-                  <TouchableOpacity
-                    style={styles.stepBtn}
-                    onPress={() => adjustSets(ex.id, 'working_sets', 1)}
-                  >
-                    <Text style={styles.stepBtnText}>+</Text>
-                  </TouchableOpacity>
+              {/* Exercise info + set counts */}
+              <View style={styles.body}>
+                <Text style={styles.exerciseName} numberOfLines={1}>
+                  {ex.displayName}
+                </Text>
+                <Text style={styles.muscleGroup}>{ex.displayMuscleGroup}</Text>
+
+                <View style={styles.setRows}>
+                  {/* Warmup sets */}
+                  <View style={styles.setRow}>
+                    <Text style={styles.setLabel}>Warmup sets</Text>
+                    <View style={styles.stepper}>
+                      <TouchableOpacity
+                        style={[styles.stepBtn, ex.warmup_sets <= 0 && styles.stepBtnDisabled]}
+                        onPress={() => adjustSets(ex.id, ex.displayId, 'warmup_sets', -1)}
+                        disabled={ex.warmup_sets <= 0}
+                      >
+                        <Text style={styles.stepBtnText}>−</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.stepValue}>{ex.warmup_sets}</Text>
+                      <TouchableOpacity
+                        style={styles.stepBtn}
+                        onPress={() => adjustSets(ex.id, ex.displayId, 'warmup_sets', 1)}
+                      >
+                        <Text style={styles.stepBtnText}>+</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {/* Working sets */}
+                  <View style={styles.setRow}>
+                    <Text style={styles.setLabel}>Working sets</Text>
+                    <View style={styles.stepper}>
+                      <TouchableOpacity
+                        style={[styles.stepBtn, ex.working_sets <= 1 && styles.stepBtnDisabled]}
+                        onPress={() => adjustSets(ex.id, ex.displayId, 'working_sets', -1)}
+                        disabled={ex.working_sets <= 1}
+                      >
+                        <Text style={styles.stepBtnText}>−</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.stepValue}>{ex.working_sets}</Text>
+                      <TouchableOpacity
+                        style={styles.stepBtn}
+                        onPress={() => adjustSets(ex.id, ex.displayId, 'working_sets', 1)}
+                      >
+                        <Text style={styles.stepBtnText}>+</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
                 </View>
+                <TouchableOpacity
+                  style={styles.removeBtn}
+                  onPress={() => handleRemoveExercise(ex.id, ex.displayName)}
+                >
+                  <Text style={styles.removeBtnText}>Remove exercise</Text>
+                </TouchableOpacity>
               </View>
             </View>
-          </View>
-        </View>
-      ))}
+          ))}
 
-      <View style={{ height: 32 }} />
-    </ScrollView>
+          <View style={{ height: 32 }} />
+        </ScrollView>
+      )}
+
+      <ExerciseSubstituteModal
+        visible={showAddExerciseModal}
+        title="Add exercise to this day"
+        onClose={() => setShowAddExerciseModal(false)}
+        onSelect={(exerciseId) => {
+          addExerciseToWorkoutFromSource(workoutId, exerciseId);
+          const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
+          setExercises(rows);
+        }}
+      />
+    </>
   );
 }
 
@@ -179,6 +251,14 @@ const styles = StyleSheet.create({
   content: { padding: 16 },
   empty: { flex: 1, backgroundColor: colors.background, alignItems: 'center', justifyContent: 'center' },
   emptyText: { color: colors.textSecondary, fontSize: 15 },
+  addEmptyButton: {
+    marginTop: 12,
+    backgroundColor: colors.accent,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  addEmptyButtonText: { color: '#000', fontSize: 14, fontWeight: '700' },
 
   hint: {
     color: colors.textTertiary,
@@ -186,6 +266,16 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     marginBottom: 16,
   },
+  addButton: {
+    backgroundColor: colors.surface,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  addButtonText: { color: colors.accent, fontSize: 14, fontWeight: '700' },
 
   card: {
     flexDirection: 'row',
@@ -264,4 +354,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: 4,
   },
+  removeBtn: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+  },
+  removeBtnText: { color: '#D97777', fontSize: 12, fontWeight: '600' },
 });

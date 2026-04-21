@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,7 @@ import {
   Modal,
   Switch,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors } from '../theme/colors';
 import { useWorkoutStore } from '../store/useWorkoutStore';
@@ -78,22 +78,26 @@ export default function HomeScreen() {
   const [swapTemplateId, setSwapTemplateId] = useState<number | null>(null);
   const [scheduleDayModal, setScheduleDayModal] = useState(false);
 
+  const refreshTodayExercises = useCallback(() => {
+    const todayType = getCurrentDayType();
+    if (todayType !== 'rest') {
+      const workout = getWorkoutByPhaseAndType(currentPhaseId, todayType);
+      setTodaysExercises(workout ? getExercisesByWorkout(workout.id) : []);
+    } else {
+      setTodaysExercises([]);
+    }
+  }, [currentPhaseId, getCurrentDayType]);
+
   useEffect(() => {
     loadSettings();
     setPhases(getAllPhases());
   }, []);
 
   useEffect(() => {
-    const dayType = getCurrentDayType();
-    if (dayType !== 'rest') {
-      const workout = getWorkoutByPhaseAndType(currentPhaseId, dayType);
-      if (workout) {
-        setTodaysExercises(getExercisesByWorkout(workout.id));
-      }
-    } else {
-      setTodaysExercises([]);
-    }
-  }, [scheduleDay, currentPhaseId]);
+    refreshTodayExercises();
+  }, [scheduleDay, currentPhaseId, refreshTodayExercises]);
+
+  useFocusEffect(refreshTodayExercises);
 
   useEffect(() => {
     setSchedulePreviewDayIndex(null);
