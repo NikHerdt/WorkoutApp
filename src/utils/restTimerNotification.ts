@@ -1,17 +1,29 @@
 import * as Notifications from 'expo-notifications';
+import { AppState, Platform } from 'react-native';
 
 let handlerSet = false;
 let scheduledEndId: string | null = null;
-
-const ACTIVE_NOTIFICATION_ID = 'workout-rest-timer-active';
+let scheduledCountdownIds: string[] = [];
+let activeLiveNotificationId: string | null = null;
 
 function ensureHandler(): void {
   if (handlerSet) return;
   try {
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('rest-timer', {
+        name: 'Rest timer',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 120, 250],
+        lightColor: '#FF6B35',
+      }).catch(() => {
+        // Ignore channel setup failures.
+      });
+    }
     Notifications.setNotificationHandler({
       handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
+        // Suppress tray alerts only while app is visibly active.
+        shouldShowAlert: AppState.currentState !== 'active',
+        shouldPlaySound: AppState.currentState !== 'active',
         shouldSetBadge: false,
       }),
     });
@@ -44,12 +56,12 @@ function formatRestSeconds(totalSeconds: number): string {
 export async function updateRestTimerNotification(remainingSeconds: number): Promise<void> {
   try {
     ensureHandler();
-    await Notifications.scheduleNotificationAsync({
-      identifier: ACTIVE_NOTIFICATION_ID,
+    activeLiveNotificationId = await Notifications.scheduleNotificationAsync({
       content: {
         title: 'Rest Timer',
         body: formatRestSeconds(remainingSeconds),
         sound: false,
+        ...(Platform.OS === 'android' ? { channelId: 'rest-timer' } : {}),
       },
       trigger: null,
     });
@@ -58,25 +70,44 @@ export async function updateRestTimerNotification(remainingSeconds: number): Pro
   }
 }
 
+export async function dismissRestTimerNotification(): Promise<void> {
+  try {
+    if (activeLiveNotificationId) {
+      await Notifications.dismissNotificationAsync(activeLiveNotificationId);
+      activeLiveNotificationId = null;
+    }
+    if (scheduledCountdownIds.length > 0) {
+      await Promise.all(
+        scheduledCountdownIds.map((id) => Notifications.dismissNotificationAsync(id))
+      );
+    }
+  } catch {
+    // Ignore dismissal errors.
+  }
+}
+
 /**
- * When the app is backgrounded JS cannot update the notification every second.
- * Switch to a static "Done at HH:MM AM/PM" message so it stays accurate.
+ * Schedule second-by-second countdown notifications for background mode.
+ * Each one replaces the previous via fixed identifier.
  */
-export async function showRestTimerEndTimeNotification(remainingSeconds: number): Promise<void> {
+export async function scheduleRestTimerCountdownNotifications(seconds: number): Promise<void> {
+  await cancelRestTimerCountdownNotifications();
+  await dismissRestTimerNotification();
   try {
     ensureHandler();
-    const end = new Date(Date.now() + remainingSeconds * 1000);
+    const safeSeconds = Math.max(1, Math.floor(seconds));
+    const end = new Date(Date.now() + safeSeconds * 1000);
     const h = end.getHours();
     const m = end.getMinutes();
     const ampm = h >= 12 ? 'PM' : 'AM';
     const h12 = h % 12 || 12;
     const timeStr = `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
-    await Notifications.scheduleNotificationAsync({
-      identifier: ACTIVE_NOTIFICATION_ID,
+    activeLiveNotificationId = await Notifications.scheduleNotificationAsync({
       content: {
         title: 'Rest Timer',
-        body: `Done at ${timeStr}`,
+        body: `Ends at ${timeStr}`,
         sound: false,
+        ...(Platform.OS === 'android' ? { channelId: 'rest-timer' } : {}),
       },
       trigger: null,
     });
@@ -85,12 +116,16 @@ export async function showRestTimerEndTimeNotification(remainingSeconds: number)
   }
 }
 
-export async function dismissRestTimerNotification(): Promise<void> {
+export async function cancelRestTimerCountdownNotifications(): Promise<void> {
+  if (scheduledCountdownIds.length === 0) return;
   try {
-    await Notifications.dismissNotificationAsync(ACTIVE_NOTIFICATION_ID);
+    await Promise.all(
+      scheduledCountdownIds.map((id) => Notifications.cancelScheduledNotificationAsync(id))
+    );
   } catch {
-    // Ignore dismissal errors.
+    // Ignore cancellation errors.
   }
+  scheduledCountdownIds = [];
 }
 
 /**
@@ -107,6 +142,7 @@ export async function scheduleRestEndNotification(seconds: number): Promise<void
         title: 'Rest complete',
         body: 'Ready for the next set.',
         sound: true,
+        ...(Platform.OS === 'android' ? { channelId: 'rest-timer' } : {}),
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,

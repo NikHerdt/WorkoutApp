@@ -12,6 +12,7 @@ import ExerciseDetailScreen from '../screens/ExerciseDetailScreen';
 import AddExerciseScreen from '../screens/AddExerciseScreen';
 import EditWorkoutScreen from '../screens/EditWorkoutScreen';
 import AnalyticsScreen from '../screens/AnalyticsScreen';
+import RestTimer from '../components/RestTimer';
 
 export type ExerciseDetailParams = {
   exerciseId: number;
@@ -118,41 +119,44 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
 export default function AppNavigator() {
   return (
     <NavigationContainer>
-      <Tab.Navigator
-        screenOptions={{
-          headerShown: false,
-          tabBarStyle: {
-            backgroundColor: colors.tabBar,
-            borderTopColor: colors.tabBarBorder,
-            borderTopWidth: 1,
-            height: 75,
-            paddingBottom: 16,
-            paddingTop: 8,
-          },
-          tabBarShowLabel: false,
-        }}
-      >
-        <Tab.Screen
-          name="TodayTab"
-          component={HomeStackNavigator}
-          options={{ tabBarIcon: ({ focused }) => <TabIcon name="Today" focused={focused} /> }}
-        />
-        <Tab.Screen
-          name="HistoryTab"
-          component={HistoryStackNavigator}
-          options={{ tabBarIcon: ({ focused }) => <TabIcon name="History" focused={focused} /> }}
-        />
-        <Tab.Screen
-          name="ExercisesTab"
-          component={ExercisesStackNavigator}
-          options={{ tabBarIcon: ({ focused }) => <TabIcon name="Exercises" focused={focused} /> }}
-        />
-        <Tab.Screen
-          name="StatsTab"
-          component={AnalyticsStackNavigator}
-          options={{ tabBarIcon: ({ focused }) => <TabIcon name="Stats" focused={focused} /> }}
-        />
-      </Tab.Navigator>
+      <>
+        <Tab.Navigator
+          screenOptions={{
+            headerShown: false,
+            tabBarStyle: {
+              backgroundColor: colors.tabBar,
+              borderTopColor: colors.tabBarBorder,
+              borderTopWidth: 1,
+              height: 75,
+              paddingBottom: 16,
+              paddingTop: 8,
+            },
+            tabBarShowLabel: false,
+          }}
+        >
+          <Tab.Screen
+            name="TodayTab"
+            component={HomeStackNavigator}
+            options={{ tabBarIcon: ({ focused }) => <TabIcon name="Today" focused={focused} /> }}
+          />
+          <Tab.Screen
+            name="HistoryTab"
+            component={HistoryStackNavigator}
+            options={{ tabBarIcon: ({ focused }) => <TabIcon name="History" focused={focused} /> }}
+          />
+          <Tab.Screen
+            name="ExercisesTab"
+            component={ExercisesStackNavigator}
+            options={{ tabBarIcon: ({ focused }) => <TabIcon name="Exercises" focused={focused} /> }}
+          />
+          <Tab.Screen
+            name="StatsTab"
+            component={AnalyticsStackNavigator}
+            options={{ tabBarIcon: ({ focused }) => <TabIcon name="Stats" focused={focused} /> }}
+          />
+        </Tab.Navigator>
+        <RestTimer />
+      </>
     </NavigationContainer>
   );
 }

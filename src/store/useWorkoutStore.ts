@@ -109,6 +109,7 @@ interface WorkoutState {
   // Rest timer
   restTimerEnabled: boolean;
   restTimerActive: boolean;
+  restTimerMinimized: boolean;
   restTimerSeconds: number;
   restTimerTotal: number;
   /** Unix ms timestamp when the current rest period ends. Used to resync after backgrounding. */
@@ -142,6 +143,7 @@ interface WorkoutState {
   setRestTimerEnabled: (enabled: boolean) => void;
   startRestTimer: (seconds: number) => void;
   stopRestTimer: () => void;
+  setRestTimerMinimized: (minimized: boolean) => void;
   tickRestTimer: () => void;
   syncRestTimer: () => void;
 }
@@ -158,6 +160,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   pendingSubstitutions: {},
   restTimerEnabled: true,
   restTimerActive: false,
+  restTimerMinimized: false,
   restTimerSeconds: 0,
   restTimerTotal: 0,
   restTimerEndTime: null,
@@ -258,6 +261,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       activeDayType: null,
       activeExercises: [],
       restTimerActive: false,
+      restTimerMinimized: false,
       restTimerEndTime: null,
       scheduleDay: newDay,
       currentPhaseId: nextPhaseId,
@@ -278,6 +282,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       activeDayType: null,
       activeExercises: [],
       restTimerActive: false,
+      restTimerMinimized: false,
       restTimerSeconds: 0,
       restTimerTotal: 0,
       restTimerEndTime: null,
@@ -488,13 +493,20 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     setSetting('rest_timer_enabled', enabled ? '1' : '0');
     set({ restTimerEnabled: enabled });
     if (!enabled) {
-      set({ restTimerActive: false, restTimerSeconds: 0, restTimerTotal: 0, restTimerEndTime: null });
+      set({
+        restTimerActive: false,
+        restTimerMinimized: false,
+        restTimerSeconds: 0,
+        restTimerTotal: 0,
+        restTimerEndTime: null,
+      });
     }
   },
 
   startRestTimer: (seconds) => {
     set({
       restTimerActive: true,
+      restTimerMinimized: false,
       restTimerSeconds: seconds,
       restTimerTotal: seconds,
       restTimerEndTime: Date.now() + seconds * 1000,
@@ -502,7 +514,17 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   stopRestTimer: () => {
-    set({ restTimerActive: false, restTimerSeconds: 0, restTimerTotal: 0, restTimerEndTime: null });
+    set({
+      restTimerActive: false,
+      restTimerMinimized: false,
+      restTimerSeconds: 0,
+      restTimerTotal: 0,
+      restTimerEndTime: null,
+    });
+  },
+
+  setRestTimerMinimized: (minimized) => {
+    set({ restTimerMinimized: minimized });
   },
 
   tickRestTimer: () => {

@@ -15,16 +15,19 @@ import {
   scheduleRestEndNotification,
   cancelRestEndNotification,
   updateRestTimerNotification,
-  showRestTimerEndTimeNotification,
   dismissRestTimerNotification,
+  scheduleRestTimerCountdownNotifications,
+  cancelRestTimerCountdownNotifications,
 } from '../utils/restTimerNotification';
 
 export default function RestTimer() {
   const {
     restTimerActive,
+    restTimerMinimized,
     restTimerSeconds,
     restTimerTotal,
     stopRestTimer,
+    setRestTimerMinimized,
     tickRestTimer,
     syncRestTimer,
   } = useWorkoutStore();
@@ -40,13 +43,21 @@ export default function RestTimer() {
       naturallyCompletedRef.current = false;
 
       scheduleRestEndNotification(restTimerSeconds);
-      updateRestTimerNotification(restTimerSeconds);
+      if (appStateRef.current !== 'active') {
+        updateRestTimerNotification(restTimerSeconds);
+      } else {
+        dismissRestTimerNotification();
+      }
 
       intervalRef.current = setInterval(() => {
         tickRestTimer();
 
         const state = useWorkoutStore.getState();
-        if (state.restTimerActive && state.restTimerSeconds > 0) {
+        if (
+          state.restTimerActive &&
+          state.restTimerSeconds > 0 &&
+          appStateRef.current !== 'active'
+        ) {
           updateRestTimerNotification(state.restTimerSeconds);
         } else if (!state.restTimerActive) {
           // Timer hit zero — mark as natural completion so cleanup skips cancellation.
@@ -64,6 +75,7 @@ export default function RestTimer() {
         // User tapped Skip — cancel the scheduled end notification.
         cancelRestEndNotification();
       }
+      cancelRestTimerCountdownNotifications();
       naturallyCompletedRef.current = false;
 
       dismissRestTimerNotification();
@@ -91,12 +103,15 @@ export default function RestTimer() {
         nextState === 'active' && (prev === 'background' || prev === 'inactive');
 
       if (isGoingBackground && useWorkoutStore.getState().restTimerActive) {
-        // JS timer will pause — switch to a static "Done at HH:MM" notification
-        // so the tray always shows accurate info no matter when the user glances at it.
-        showRestTimerEndTimeNotification(useWorkoutStore.getState().restTimerSeconds);
+        const remaining = useWorkoutStore.getState().restTimerSeconds;
+        scheduleRestTimerCountdownNotifications(remaining);
       }
 
       if (isReturningForeground && useWorkoutStore.getState().restTimerActive) {
+        // Keep the tray clean while app is visible.
+        cancelRestTimerCountdownNotifications();
+        dismissRestTimerNotification();
+
         // Resync the stored countdown from wall-clock elapsed time.
         syncRestTimer();
 
@@ -108,9 +123,6 @@ export default function RestTimer() {
         const total = useWorkoutStore.getState().restTimerTotal;
 
         if (remaining > 0) {
-          // Resume live countdown in the notification now that JS is running again.
-          updateRestTimerNotification(remaining);
-
           progressAnim.stopAnimation();
           progressAnim.setValue(total > 0 ? remaining / total : 0);
           Animated.timing(progressAnim, {
@@ -123,7 +135,11 @@ export default function RestTimer() {
             tickRestTimer();
 
             const state = useWorkoutStore.getState();
-            if (state.restTimerActive && state.restTimerSeconds > 0) {
+            if (
+              state.restTimerActive &&
+              state.restTimerSeconds > 0 &&
+              appStateRef.current !== 'active'
+            ) {
               updateRestTimerNotification(state.restTimerSeconds);
             } else if (!state.restTimerActive) {
               naturallyCompletedRef.current = true;
@@ -143,35 +159,63 @@ export default function RestTimer() {
   const timeStr = `${minutes}:${String(seconds).padStart(2, '0')}`;
 
   return (
-    <Modal transparent animationType="slide" visible={restTimerActive}>
-      <View style={styles.overlay}>
-        <View style={styles.container}>
-          <Text style={styles.label}>REST TIMER</Text>
-          <View style={styles.timerCircle}>
-            <Text style={styles.time}>{timeStr}</Text>
-            <Text style={styles.subText}>
-              {Math.ceil(restTimerTotal / 60)} min rest
-            </Text>
+    <>
+      <Modal transparent animationType="slide" visible={restTimerActive && !restTimerMinimized}>
+        <View style={styles.overlay}>
+          <View style={styles.container}>
+            <View style={styles.headerRow}>
+              <Text style={styles.label}>REST TIMER</Text>
+              <TouchableOpacity
+                style={styles.minimizeButton}
+                onPress={() => setRestTimerMinimized(true)}
+              >
+                <Text style={styles.minimizeText}>Minimize</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.timerCircle}>
+              <Text style={styles.time}>{timeStr}</Text>
+              <Text style={styles.subText}>
+                {Math.ceil(restTimerTotal / 60)} min rest
+              </Text>
+            </View>
+            <View style={styles.progressBar}>
+              <Animated.View
+                style={[
+                  styles.progressFill,
+                  {
+                    width: progressAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ['0%', '100%'],
+                    }),
+                  },
+                ]}
+              />
+            </View>
+            <TouchableOpacity style={styles.skipButton} onPress={stopRestTimer}>
+              <Text style={styles.skipText}>Skip Rest</Text>
+            </TouchableOpacity>
           </View>
-          <View style={styles.progressBar}>
-            <Animated.View
-              style={[
-                styles.progressFill,
-                {
-                  width: progressAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: ['0%', '100%'],
-                  }),
-                },
-              ]}
-            />
-          </View>
-          <TouchableOpacity style={styles.skipButton} onPress={stopRestTimer}>
-            <Text style={styles.skipText}>Skip Rest</Text>
+        </View>
+      </Modal>
+
+      {restTimerActive && restTimerMinimized ? (
+        <View pointerEvents="box-none" style={styles.minimizedWrap}>
+          <TouchableOpacity
+            style={styles.minimizedChip}
+            onPress={() => setRestTimerMinimized(false)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.minimizedLeft}>
+              <Text style={styles.minimizedLabel}>REST</Text>
+              <Text style={styles.minimizedTime}>{timeStr}</Text>
+            </View>
+            <TouchableOpacity style={styles.minimizedSkip} onPress={stopRestTimer}>
+              <Text style={styles.minimizedSkipText}>Skip</Text>
+            </TouchableOpacity>
           </TouchableOpacity>
         </View>
-      </View>
-    </Modal>
+      ) : null}
+    </>
   );
 }
 
@@ -198,6 +242,26 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 2,
     marginBottom: 24,
+  },
+  headerRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  minimizeButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+  },
+  minimizeText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
   },
   timerCircle: {
     width: 160,
@@ -245,6 +309,54 @@ const styles = StyleSheet.create({
   skipText: {
     color: colors.textSecondary,
     fontSize: 15,
+    fontWeight: '600',
+  },
+  minimizedWrap: {
+    position: 'absolute',
+    bottom: 92,
+    right: 12,
+    left: 12,
+    zIndex: 1000,
+  },
+  minimizedChip: {
+    backgroundColor: colors.restTimer,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  minimizedLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  minimizedLabel: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    letterSpacing: 1,
+    fontWeight: '700',
+  },
+  minimizedTime: {
+    color: colors.accent,
+    fontSize: 18,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  minimizedSkip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  minimizedSkipText: {
+    color: colors.textSecondary,
+    fontSize: 12,
     fontWeight: '600',
   },
 });

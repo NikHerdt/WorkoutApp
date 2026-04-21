@@ -16,7 +16,6 @@ import { useWorkoutStore } from '../store/useWorkoutStore';
 import { HomeStackParamList } from '../navigation/AppNavigator';
 import { getExerciseById, getExercisesByWorkout, getLastSessionSetsForExercise, upsertBodyWeightForDate, getBodyWeightForDate } from '../db/database';
 import SetRow from '../components/SetRow';
-import RestTimer from '../components/RestTimer';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import BodyWeightLogModal from '../components/BodyWeightLogModal';
 import ActionSheet, { ActionSheetAction } from '../components/ActionSheet';
@@ -162,8 +161,6 @@ export default function WorkoutScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <RestTimer />
-
       {/* Header stats */}
       <View style={styles.headerBar}>
         <Text style={styles.workoutName}>{activeWorkoutName}</Text>
