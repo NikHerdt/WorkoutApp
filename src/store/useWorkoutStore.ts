@@ -38,6 +38,30 @@ function addDaysLocal(ymd: string, deltaDays: number): string {
   return toLocalDateYmd(base);
 }
 
+/** ISO YYYY-MM-DD lexicographic compare. */
+function compareYmd(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+/**
+ * After finish/skip-rest we shift programStart back one day so the schedule advances immediately.
+ * When the calendar moves to the next local day, `today - start` would otherwise grow by two;
+ * undo that one artificial shift once we've left that calendar day.
+ */
+const SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY = 'schedule_explicit_advance_ymd';
+
+function maybeUndoExplicitScheduleAdvance(programStartDate: string): string {
+  const explicit = getSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY);
+  if (!explicit) return programStartDate;
+  const today = toLocalDateYmd();
+  if (compareYmd(today, explicit) <= 0) return programStartDate;
+  const restored = addDaysLocal(programStartDate, 1);
+  setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, '');
+  setSetting('program_start_date', restored);
+  return restored;
+}
+
 function resolveProgramProgress(programStartYmd: string): {
   scheduleDay: number;
   currentPhaseId: number;
@@ -97,8 +121,11 @@ function buildActiveExerciseState(
 
   const isTimed = String(ex.target_reps ?? '').includes('HOLD');
   const prevSets = getLastSessionSetsForExercise(ex.id);
-  const lastWeight = prevSets.find((s: any) => s.set_type === 'working')?.weight ?? 0;
-  const lastReps = prevSets.find((s: any) => s.set_type === 'working')?.reps ?? 0;
+  const prevWorking = prevSets.filter((s: any) => s.set_type === 'working');
+  const firstWorkingHist = prevWorking[0];
+  const lastWorkingHist = prevWorking[prevWorking.length - 1];
+  const lastWeight = Number(firstWorkingHist?.weight) || 0;
+  const lastReps = Number(firstWorkingHist?.reps) || 0;
   const workingRepsForWarmups =
     lastReps > 0 ? lastReps : parseWorkingRepsFromTarget(ex.target_reps ?? '');
   const warmupPresets = buildWarmupPresets(lastWeight, workingRepsForWarmups, ex.warmup_sets, isTimed);
@@ -120,11 +147,21 @@ function buildActiveExerciseState(
   }
 
   for (let i = 0; i < ex.working_sets; i++) {
+    const hist =
+      prevWorking.length > 0 ? prevWorking[i] ?? lastWorkingHist : undefined;
+    const wNum = hist != null ? Number(hist.weight) || 0 : 0;
+    const rNum = hist != null ? Number(hist.reps) || 0 : 0;
     sets.push({
       setNumber: ex.warmup_sets + i + 1,
       setType: 'working',
-      weight: lastWeight > 0 ? String(lastWeight) : '',
-      reps: isTimed ? (lastReps > 0 ? String(lastReps) : '30') : (lastReps > 0 ? String(lastReps) : ''),
+      weight: wNum > 0 ? String(wNum) : '',
+      reps: isTimed
+        ? rNum > 0
+          ? String(rNum)
+          : '30'
+        : rNum > 0
+          ? String(rNum)
+          : '',
       completed: false,
       propagationVersion: 0,
     });
@@ -253,6 +290,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       setSetting('program_start_date', programStartDate);
       setSetting('program_start_date_migrated_v2', '1');
     }
+    programStartDate = maybeUndoExplicitScheduleAdvance(programStartDate);
     const progress = resolveProgramProgress(programStartDate);
     set({
       scheduleDay: progress.scheduleDay,
@@ -323,6 +361,13 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
 
     completeSession(activeSessionId);
 
+    let programStartDate = get().programStartDate;
+    programStartDate = maybeUndoExplicitScheduleAdvance(programStartDate);
+    const bumpedStart = addDaysLocal(programStartDate, -1);
+    setSetting('program_start_date', bumpedStart);
+    setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, toLocalDateYmd());
+    const progress = resolveProgramProgress(bumpedStart);
+
     set({
       activeSessionId: null,
       activeWorkoutId: null,
@@ -332,6 +377,11 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       restTimerActive: false,
       restTimerMinimized: false,
       restTimerEndTime: null,
+      scheduleDay: progress.scheduleDay,
+      currentPhaseId: progress.currentPhaseId,
+      phaseWeek: progress.phaseWeek,
+      programStartDate: bumpedStart,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
     });
   },
 
@@ -355,9 +405,11 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   skipRestDay: () => {
-    const { programStartDate } = get();
+    let { programStartDate } = get();
+    programStartDate = maybeUndoExplicitScheduleAdvance(programStartDate);
     const nextStart = addDaysLocal(programStartDate, -1);
     setSetting('program_start_date', nextStart);
+    setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, toLocalDateYmd());
     const progress = resolveProgramProgress(nextStart);
     set({
       scheduleDay: progress.scheduleDay,
@@ -373,6 +425,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     const currentDay = get().scheduleDay % 7;
     const delta = currentDay - d;
     const nextStart = addDaysLocal(get().programStartDate, delta);
+    setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, '');
     setSetting('program_start_date', nextStart);
     const progress = resolveProgramProgress(nextStart);
     set({
@@ -391,6 +444,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     const today = toLocalDateYmd();
     const dayIndex = get().scheduleDay % 7;
     const start = addDaysLocal(today, -(weekOffsetToPhaseStart * 7 + dayIndex));
+    setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, '');
     setSetting('program_start_date', start);
     const progress = resolveProgramProgress(start);
     set({
@@ -454,11 +508,19 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
           (s, i) => i > setIndex && !s.completed && s.setType === 'working'
         );
         if (nextIndex !== -1) {
+          const next = sets[nextIndex];
+          const nextWeightEmpty = String(next.weight ?? '').trim() === '';
+          const nextRepsEmpty = String(next.reps ?? '').trim() === '';
+          const newWeight = nextWeightEmpty ? completedSet.weight : next.weight;
+          const newReps = nextRepsEmpty ? completedSet.reps : next.reps;
+          const changed = newWeight !== next.weight || newReps !== next.reps;
           sets[nextIndex] = {
-            ...sets[nextIndex],
-            weight: completedSet.weight,
-            reps: completedSet.reps,
-            propagationVersion: (sets[nextIndex].propagationVersion ?? 0) + 1,
+            ...next,
+            weight: newWeight,
+            reps: newReps,
+            propagationVersion: changed
+              ? (next.propagationVersion ?? 0) + 1
+              : next.propagationVersion ?? 0,
           };
         }
       }
@@ -600,6 +662,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
 
     setSetting('program_start_date', normalized);
     setSetting('program_start_date_migrated_v2', '1');
+    setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, '');
     const progress = resolveProgramProgress(normalized);
     set({
       scheduleDay: progress.scheduleDay,
