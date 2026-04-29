@@ -252,6 +252,29 @@ function barWidthForN(numBars: number): number {
   return Math.max(2, Math.min(28, bw));
 }
 
+/**
+ * Build a tighter Y-axis domain so small changes remain visible.
+ * Uses yAxisOffset + maxValue to zoom into the data range.
+ */
+function buildAdaptiveYAxis(
+  points: { value: number }[],
+  options?: { minRange?: number; minPadding?: number }
+): { yAxisOffset?: number; maxValue?: number } {
+  const values = points.map((p) => p.value).filter((v) => Number.isFinite(v));
+  if (values.length === 0) return {};
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const minRange = options?.minRange ?? 1;
+  const minPadding = options?.minPadding ?? 0.25;
+  const range = Math.max(max - min, minRange);
+  const pad = Math.max(range * 0.12, minPadding);
+
+  const offset = Math.max(0, min - pad);
+  const axisMax = Math.max(max + pad - offset, minRange);
+  return { yAxisOffset: offset, maxValue: axisMax };
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function CollapsibleSection({
@@ -359,6 +382,7 @@ function WorkoutHeatmap({ grid }: { grid: HeatmapCell[][] }) {
 
 export default function AnalyticsScreen() {
   const [rangeDays, setRangeDays] = useState<RangeDays>(90);
+  const [autoScaleCharts, setAutoScaleCharts] = useState(true);
 
   // ── Lifetime (always all-time) ──
   const [stats, setStats] = useState<LifetimeStats>({
@@ -558,6 +582,7 @@ export default function AnalyticsScreen() {
   const has1RMs = top1RMs.length > 0;
   const hasHeatmap = heatmapGrid.some((w) => w.some((c) => c.hasWorkout));
   const hasOverlayBW = volBodyWeightData.bwPoints.some((p) => p.value > 0);
+  const overlayBWChartData = volBodyWeightData.bwPoints.filter((p) => p.value > 0);
   const has1RMTrends = topExercise1RMs.length > 0;
   const hasFatigueIndex = fatigueIndex !== null;
   const hasRelStrength = relStrengthScores.length > 0;
@@ -581,6 +606,15 @@ export default function AnalyticsScreen() {
     if (t === 'biweekly') return 'bi-weekly';
     return 'weekly';
   })();
+  const bodyWeightAxis = buildAdaptiveYAxis(bodyWeight, { minRange: 1, minPadding: 0.2 });
+  const overlayVolAxis = buildAdaptiveYAxis(volBodyWeightData.volPoints, {
+    minRange: 500,
+    minPadding: 100,
+  });
+  const overlayBWAxis = buildAdaptiveYAxis(overlayBWChartData, {
+    minRange: 1,
+    minPadding: 0.2,
+  });
 
   return (
     <ScrollView
@@ -609,20 +643,34 @@ export default function AnalyticsScreen() {
 
       {/* Range Selector */}
       {hasAnyData && (
-        <View style={styles.rangeRow}>
-          {RANGES.map((r) => (
+        <>
+          <View style={styles.rangeRow}>
+            {RANGES.map((r) => (
+              <TouchableOpacity
+                key={r.days}
+                style={[styles.rangeBtn, rangeDays === r.days && styles.rangeBtnActive]}
+                onPress={() => setRangeDays(r.days)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.rangeBtnText, rangeDays === r.days && styles.rangeBtnTextActive]}>
+                  {r.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View style={styles.chartScaleRow}>
+            <Text style={styles.chartScaleLabel}>Y-axis scaling</Text>
             <TouchableOpacity
-              key={r.days}
-              style={[styles.rangeBtn, rangeDays === r.days && styles.rangeBtnActive]}
-              onPress={() => setRangeDays(r.days)}
-              activeOpacity={0.7}
+              style={[styles.chartScaleBtn, autoScaleCharts && styles.chartScaleBtnActive]}
+              onPress={() => setAutoScaleCharts((v) => !v)}
+              activeOpacity={0.75}
             >
-              <Text style={[styles.rangeBtnText, rangeDays === r.days && styles.rangeBtnTextActive]}>
-                {r.label}
+              <Text style={[styles.chartScaleBtnText, autoScaleCharts && styles.chartScaleBtnTextActive]}>
+                {autoScaleCharts ? 'Auto scale: ON' : 'Auto scale: OFF'}
               </Text>
             </TouchableOpacity>
-          ))}
-        </View>
+          </View>
+        </>
       )}
 
       {/* Workout Heatmap */}
@@ -756,6 +804,8 @@ export default function AnalyticsScreen() {
               rulesType="dashed"
               backgroundColor={colors.surface}
               noOfSections={4}
+              yAxisOffset={autoScaleCharts ? bodyWeightAxis.yAxisOffset : undefined}
+              maxValue={autoScaleCharts ? bodyWeightAxis.maxValue : undefined}
               spacing={lineSpacingForN(bodyWeight.length)}
               initialSpacing={12}
               endSpacing={12}
@@ -817,6 +867,8 @@ export default function AnalyticsScreen() {
                 rulesType="dashed"
                 backgroundColor={colors.surface}
                 noOfSections={3}
+                yAxisOffset={autoScaleCharts ? overlayVolAxis.yAxisOffset : undefined}
+                maxValue={autoScaleCharts ? overlayVolAxis.maxValue : undefined}
                 hideDataPoints={volBodyWeightData.volPoints.length > 20}
                 formatYLabel={(v) => formatVolume(Number(v))}
               />
@@ -834,10 +886,10 @@ export default function AnalyticsScreen() {
           <View style={styles.chartCard}>
             {hasOverlayBW ? (
               <LineChart
-                data={volBodyWeightData.bwPoints}
+                data={overlayBWChartData}
                 width={PLOT_WIDTH}
                 height={130}
-                spacing={lineSpacingForN(volBodyWeightData.bwPoints.length)}
+                spacing={lineSpacingForN(overlayBWChartData.length)}
                 initialSpacing={12}
                 endSpacing={12}
                 scrollToEnd
@@ -854,7 +906,9 @@ export default function AnalyticsScreen() {
                 rulesType="dashed"
                 backgroundColor={colors.surface}
                 noOfSections={3}
-                hideDataPoints={volBodyWeightData.bwPoints.length > 20}
+                yAxisOffset={autoScaleCharts ? overlayBWAxis.yAxisOffset : undefined}
+                maxValue={autoScaleCharts ? overlayBWAxis.maxValue : undefined}
+                hideDataPoints={overlayBWChartData.length > 20}
               />
             ) : (
               <View style={styles.chartPlaceholder}>
@@ -877,6 +931,9 @@ export default function AnalyticsScreen() {
             <View key={ex.name} style={styles.trendBlock}>
               <Text style={[styles.trendExerciseName, { color: ex.color }]}>{ex.name}</Text>
               <View style={styles.chartCard}>
+                {(() => {
+                  const trendAxis = buildAdaptiveYAxis(ex.data, { minRange: 1, minPadding: 0.25 });
+                  return (
                 <LineChart
                   data={ex.data}
                   width={PLOT_WIDTH}
@@ -895,12 +952,16 @@ export default function AnalyticsScreen() {
                   rulesType="dashed"
                   backgroundColor={colors.surface}
                   noOfSections={3}
+                  yAxisOffset={autoScaleCharts ? trendAxis.yAxisOffset : undefined}
+                  maxValue={autoScaleCharts ? trendAxis.maxValue : undefined}
                   spacing={lineSpacingForN(ex.data.length)}
                   initialSpacing={12}
                   endSpacing={12}
                   hideDataPoints={ex.data.length > 15}
                   scrollToEnd
                 />
+                  );
+                })()}
               </View>
             </View>
           ))}
@@ -1129,6 +1190,38 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   rangeBtnTextActive: {
+    color: colors.accent,
+  },
+  chartScaleRow: {
+    marginTop: -18,
+    marginBottom: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  chartScaleLabel: {
+    color: colors.textTertiary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chartScaleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  chartScaleBtnActive: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accent + '14',
+  },
+  chartScaleBtnText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chartScaleBtnTextActive: {
     color: colors.accent,
   },
 
