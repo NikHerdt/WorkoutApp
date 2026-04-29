@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   Modal,
-  Alert,
   TextInput,
 } from 'react-native';
 import { Calendar } from 'react-native-calendars';
@@ -23,6 +22,7 @@ import BodyWeightLogModal from '../components/BodyWeightLogModal';
 import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { toLocalDateYmd } from '../utils/dateLocal';
 import { useWorkoutStore } from '../store/useWorkoutStore';
+import { AppConfirmModal, AppNoticeModal } from '../components/AppModalDialogs';
 
 const DAY_COLORS: Record<string, string> = {
   push: '#FF6B35',
@@ -44,6 +44,8 @@ export default function HistoryScreen() {
   const [weightModalDate, setWeightModalDate] = useState(toLocalDateYmd());
   const [programStartModalOpen, setProgramStartModalOpen] = useState(false);
   const [programStartDraft, setProgramStartDraft] = useState('');
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [dateValidationNotice, setDateValidationNotice] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -101,27 +103,8 @@ export default function HistoryScreen() {
   }
 
   function handleDeleteSession() {
-    const id = selectedSession?.id;
-    if (id == null) return;
-    Alert.alert(
-      'Delete workout?',
-      'This removes this session and all logged sets. This cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            if (deleteCompletedWorkoutSession(id)) {
-              setShowDetail(false);
-              setSelectedSession(null);
-              setSessionSets([]);
-              loadSessions();
-            }
-          },
-        },
-      ]
-    );
+    if (selectedSession?.id == null) return;
+    setDeleteConfirmOpen(true);
   }
 
   function openProgramStartModal() {
@@ -133,7 +116,7 @@ export default function HistoryScreen() {
     const next = programStartDraft.trim();
     const ok = setProgramStartDate(next);
     if (!ok) {
-      Alert.alert('Invalid date', 'Enter a valid date in YYYY-MM-DD format.');
+      setDateValidationNotice('Enter a valid date in YYYY-MM-DD format.');
       return;
     }
     setProgramStartModalOpen(false);
@@ -280,6 +263,27 @@ export default function HistoryScreen() {
         </View>
       </Modal>
 
+      <AppConfirmModal
+        visible={deleteConfirmOpen}
+        title="Delete workout?"
+        message="This removes this session and all logged sets. This cannot be undone."
+        cancelText="Cancel"
+        confirmText="Delete"
+        confirmVariant="danger"
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => {
+          const id = selectedSession?.id;
+          if (id == null) return;
+          if (deleteCompletedWorkoutSession(id)) {
+            setDeleteConfirmOpen(false);
+            setShowDetail(false);
+            setSelectedSession(null);
+            setSessionSets([]);
+            loadSessions();
+          }
+        }}
+      />
+
       <BodyWeightLogModal
         visible={weightModalOpen}
         title="Log body weight"
@@ -336,6 +340,13 @@ export default function HistoryScreen() {
           </View>
         </View>
       </Modal>
+
+      <AppNoticeModal
+        visible={dateValidationNotice !== null}
+        title="Invalid date"
+        message={dateValidationNotice ?? ''}
+        onClose={() => setDateValidationNotice(null)}
+      />
     </View>
   );
 }

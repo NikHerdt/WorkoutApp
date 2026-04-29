@@ -5,7 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Alert,
 } from 'react-native';
 import { RouteProp, useFocusEffect, useRoute } from '@react-navigation/native';
 import { colors } from '../theme/colors';
@@ -20,6 +19,7 @@ import {
 import { useWorkoutStore } from '../store/useWorkoutStore';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import type { HomeStackParamList } from '../navigation/AppNavigator';
+import { AppConfirmModal } from '../components/AppModalDialogs';
 
 type Route = RouteProp<HomeStackParamList, 'EditWorkout'>;
 
@@ -44,6 +44,7 @@ export default function EditWorkoutScreen() {
   const pendingSubstitutions = useWorkoutStore((s) => s.pendingSubstitutions);
   const [exercises, setExercises] = useState<ExerciseRow[]>([]);
   const [showAddExerciseModal, setShowAddExerciseModal] = useState(false);
+  const [exerciseToRemove, setExerciseToRemove] = useState<{ id: number; name: string } | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -99,22 +100,7 @@ export default function EditWorkoutScreen() {
   }
 
   function handleRemoveExercise(exerciseId: number, name: string) {
-    Alert.alert(
-      'Remove exercise?',
-      `Remove ${name} from this day?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => {
-            removeExerciseFromWorkout(exerciseId);
-            const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
-            setExercises(rows);
-          },
-        },
-      ]
-    );
+    setExerciseToRemove({ id: exerciseId, name });
   }
 
   const displayExercises: DisplayExerciseRow[] = exercises.map((ex) => {
@@ -240,6 +226,22 @@ export default function EditWorkoutScreen() {
           addExerciseToWorkoutFromSource(workoutId, exerciseId);
           const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
           setExercises(rows);
+        }}
+      />
+      <AppConfirmModal
+        visible={exerciseToRemove !== null}
+        title="Remove exercise?"
+        message={`Remove ${exerciseToRemove?.name ?? 'this exercise'} from this day?`}
+        cancelText="Cancel"
+        confirmText="Remove"
+        confirmVariant="danger"
+        onCancel={() => setExerciseToRemove(null)}
+        onConfirm={() => {
+          if (!exerciseToRemove) return;
+          removeExerciseFromWorkout(exerciseToRemove.id);
+          const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
+          setExercises(rows);
+          setExerciseToRemove(null);
         }}
       />
     </>

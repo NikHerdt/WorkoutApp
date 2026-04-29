@@ -6,7 +6,6 @@ import {
   StyleSheet,
   Dimensions,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { RouteProp, useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -27,6 +26,7 @@ import { getProgramSubstitutions } from '../data/exerciseProgramSubstitutions';
 import { useWorkoutStore } from '../store/useWorkoutStore';
 import type { ExerciseDetailParams } from '../navigation/AppNavigator';
 import { WEIGHT_UNIT, WEIGHT_UNIT_HEADER } from '../constants/weightUnits';
+import { AppConfirmModal, AppNoticeModal } from '../components/AppModalDialogs';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_WIDTH = SCREEN_WIDTH - 64;
@@ -122,6 +122,9 @@ export default function ExerciseDetailScreen() {
   const [estimated1RMHistory, setEstimated1RMHistory] = useState<any[]>([]);
   const [pr, setPr] = useState<any>(null);
   const [exerciseDetail, setExerciseDetail] = useState<any>(null);
+  const [inactiveExerciseNoticeOpen, setInactiveExerciseNoticeOpen] = useState(false);
+  const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false);
+  const [replacePendingId, setReplacePendingId] = useState<number | null>(null);
 
   useEffect(() => {
     const weightData = getExerciseWeightHistory(exerciseId);
@@ -199,10 +202,7 @@ export default function ExerciseDetailScreen() {
     if (activeSessionId) {
       const idx = activeExercises.findIndex((e) => e.exerciseId === exerciseId);
       if (idx < 0) {
-        Alert.alert(
-          'Not in current workout',
-          'Open this exercise from the workout screen to swap it during an active session.'
-        );
+        setInactiveExerciseNoticeOpen(true);
         return;
       }
       const hadCompleted = activeExercises[idx].sets.some((s) => s.completed);
@@ -211,10 +211,8 @@ export default function ExerciseDetailScreen() {
         navigation.goBack();
       };
       if (hadCompleted) {
-        Alert.alert('Replace exercise?', 'Completed sets for this exercise will be cleared.', [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Replace', style: 'destructive', onPress: run },
-        ]);
+        setReplacePendingId(replacementId);
+        setReplaceConfirmOpen(true);
       } else {
         run();
       }
@@ -523,6 +521,39 @@ export default function ExerciseDetailScreen() {
       )}
 
       <View style={{ height: 32 }} />
+
+      <AppNoticeModal
+        visible={inactiveExerciseNoticeOpen}
+        title="Not in current workout"
+        message="Open this exercise from the workout screen to swap it during an active session."
+        onClose={() => setInactiveExerciseNoticeOpen(false)}
+      />
+
+      <AppConfirmModal
+        visible={replaceConfirmOpen}
+        title="Replace exercise?"
+        message="Completed sets for this exercise will be cleared."
+        cancelText="Cancel"
+        confirmText="Replace"
+        confirmVariant="danger"
+        onCancel={() => {
+          setReplaceConfirmOpen(false);
+          setReplacePendingId(null);
+        }}
+        onConfirm={() => {
+          const replacementId = replacePendingId;
+          const idx = activeExercises.findIndex((e) => e.exerciseId === exerciseId);
+          if (replacementId == null || idx < 0) {
+            setReplaceConfirmOpen(false);
+            setReplacePendingId(null);
+            return;
+          }
+          replaceActiveExercise(idx, replacementId);
+          setReplaceConfirmOpen(false);
+          setReplacePendingId(null);
+          navigation.goBack();
+        }}
+      />
     </ScrollView>
   );
 }

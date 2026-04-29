@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   StatusBar,
-  Alert,
   Modal,
   Switch,
 } from 'react-native';
@@ -25,6 +24,7 @@ import {
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import { SCHEDULE, DAY_LABELS, DayType } from '../types';
 import { getWeekCountForPhase, projectPhaseAfterProgramWeeks } from '../data/programWeeks';
+import { AppConfirmModal, AppNoticeModal } from '../components/AppModalDialogs';
 
 type Nav = NativeStackNavigationProp<HomeStackParamList, 'Home'>;
 
@@ -77,6 +77,8 @@ export default function HomeScreen() {
   const [schedulePreviewDayIndex, setSchedulePreviewDayIndex] = useState<number | null>(null);
   const [swapTemplateId, setSwapTemplateId] = useState<number | null>(null);
   const [scheduleDayModal, setScheduleDayModal] = useState(false);
+  const [activeWorkoutNoticeOpen, setActiveWorkoutNoticeOpen] = useState(false);
+  const [discardWorkoutConfirmOpen, setDiscardWorkoutConfirmOpen] = useState(false);
 
   const refreshTodayExercises = useCallback(() => {
     const todayType = getCurrentDayType();
@@ -137,18 +139,7 @@ export default function HomeScreen() {
   }
 
   function handleDiscardWorkout() {
-    Alert.alert(
-      'Discard workout?',
-      'This removes your in-progress session. Sets you logged this session are not saved.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Discard',
-          style: 'destructive',
-          onPress: () => abortWorkout(),
-        },
-      ]
-    );
+    setDiscardWorkoutConfirmOpen(true);
   }
 
   return (
@@ -204,10 +195,7 @@ export default function HomeScreen() {
               style={[styles.dayBadge, { backgroundColor: accentColor + '22', borderColor: accentColor + '44' }]}
               onPress={() => {
                 if (activeSessionId) {
-                  Alert.alert(
-                    'Workout in progress',
-                    'Finish or discard your workout before changing the program day.'
-                  );
+                  setActiveWorkoutNoticeOpen(true);
                   return;
                 }
                 setScheduleDayModal(true);
@@ -518,6 +506,27 @@ export default function HomeScreen() {
           </View>
         </View>
       </Modal>
+
+      <AppNoticeModal
+        visible={activeWorkoutNoticeOpen}
+        title="Workout in progress"
+        message="Finish or discard your workout before changing the program day."
+        onClose={() => setActiveWorkoutNoticeOpen(false)}
+      />
+
+      <AppConfirmModal
+        visible={discardWorkoutConfirmOpen}
+        title="Discard workout?"
+        message="This removes your in-progress session. Sets you logged this session are not saved."
+        cancelText="Cancel"
+        confirmText="Discard"
+        confirmVariant="danger"
+        onCancel={() => setDiscardWorkoutConfirmOpen(false)}
+        onConfirm={() => {
+          setDiscardWorkoutConfirmOpen(false);
+          abortWorkout();
+        }}
+      />
 
       <ExerciseSubstituteModal
         visible={swapTemplateId !== null}

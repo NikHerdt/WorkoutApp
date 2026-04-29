@@ -8,11 +8,11 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Alert,
 } from 'react-native';
 import { colors } from '../theme/colors';
 import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { isValidYmd } from '../utils/dateLocal';
+import { AppNoticeModal } from './AppModalDialogs';
 
 type Props = {
   visible: boolean;
@@ -42,6 +42,7 @@ export default function BodyWeightLogModal({
 }: Props) {
   const [dateStr, setDateStr] = useState(initialDateYmd);
   const [lbsStr, setLbsStr] = useState('');
+  const [validationError, setValidationError] = useState<{ title: string; message: string } | null>(null);
 
   useEffect(() => {
     if (visible) {
@@ -53,12 +54,15 @@ export default function BodyWeightLogModal({
   function handleSave() {
     const date = lockDate ? initialDateYmd.trim() : dateStr.trim();
     if (!isValidYmd(date)) {
-      Alert.alert('Invalid date', 'Use YYYY-MM-DD format.');
+      setValidationError({ title: 'Invalid date', message: 'Use YYYY-MM-DD format.' });
       return;
     }
     const lbs = parseFloat(lbsStr.replace(',', '.'));
     if (!Number.isFinite(lbs) || lbs <= 0 || lbs > 1200) {
-      Alert.alert('Invalid weight', `Enter a realistic body weight in ${WEIGHT_UNIT} (0–1200).`);
+      setValidationError({
+        title: 'Invalid weight',
+        message: `Enter a realistic body weight in ${WEIGHT_UNIT} (0–1200).`,
+      });
       return;
     }
     onSave(date, lbs);
@@ -118,6 +122,12 @@ export default function BodyWeightLogModal({
           </View>
         </View>
       </KeyboardAvoidingView>
+      <AppNoticeModal
+        visible={validationError !== null}
+        title={validationError?.title ?? ''}
+        message={validationError?.message ?? ''}
+        onClose={() => setValidationError(null)}
+      />
     </Modal>
   );
 }
