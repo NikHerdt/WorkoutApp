@@ -9,6 +9,7 @@ import {
   logSet,
   getLastSessionSetsForExercise,
   deleteIncompleteSession,
+  isIncompleteSession,
   getExerciseById,
   getPhaseSubstitutionsForPhase,
   upsertPhaseSubstitution,
@@ -50,6 +51,52 @@ function compareYmd(a: string, b: string): number {
  * undo that one artificial shift once we've left that calendar day.
  */
 const SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY = 'schedule_explicit_advance_ymd';
+const ACTIVE_WORKOUT_STATE_KEY = 'active_workout_state_v1';
+
+type PersistedActiveWorkoutState = {
+  activeSessionId: number;
+  activeWorkoutId: number | null;
+  activeWorkoutName: string;
+  activeDayType: DayType | null;
+  activeExercises: ActiveExerciseState[];
+  restTimerActive: boolean;
+  restTimerMinimized: boolean;
+  restTimerSeconds: number;
+  restTimerTotal: number;
+  restTimerEndTime: number | null;
+};
+
+function readPersistedActiveWorkoutState(): PersistedActiveWorkoutState | null {
+  const raw = getSetting(ACTIVE_WORKOUT_STATE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as PersistedActiveWorkoutState;
+    if (!parsed || !Number.isFinite(parsed.activeSessionId) || parsed.activeSessionId <= 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function persistActiveWorkoutState(state: WorkoutState): void {
+  if (!state.activeSessionId) {
+    setSetting(ACTIVE_WORKOUT_STATE_KEY, '');
+    return;
+  }
+  const payload: PersistedActiveWorkoutState = {
+    activeSessionId: state.activeSessionId,
+    activeWorkoutId: state.activeWorkoutId,
+    activeWorkoutName: state.activeWorkoutName,
+    activeDayType: state.activeDayType,
+    activeExercises: state.activeExercises,
+    restTimerActive: state.restTimerActive,
+    restTimerMinimized: state.restTimerMinimized,
+    restTimerSeconds: state.restTimerSeconds,
+    restTimerTotal: state.restTimerTotal,
+    restTimerEndTime: state.restTimerEndTime,
+  };
+  setSetting(ACTIVE_WORKOUT_STATE_KEY, JSON.stringify(payload));
+}
 
 function maybeUndoExplicitScheduleAdvance(programStartDate: string): string {
   const explicit = getSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY);
@@ -292,14 +339,32 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     }
     programStartDate = maybeUndoExplicitScheduleAdvance(programStartDate);
     const progress = resolveProgramProgress(programStartDate);
-    set({
+    const nextState: Partial<WorkoutState> = {
       scheduleDay: progress.scheduleDay,
       currentPhaseId: progress.currentPhaseId,
       phaseWeek: progress.phaseWeek,
       programStartDate,
       pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
       restTimerEnabled: restTimerEnabledStr === null ? true : restTimerEnabledStr === '1',
-    });
+    };
+
+    const persisted = readPersistedActiveWorkoutState();
+    if (persisted && isIncompleteSession(persisted.activeSessionId)) {
+      nextState.activeSessionId = persisted.activeSessionId;
+      nextState.activeWorkoutId = persisted.activeWorkoutId;
+      nextState.activeWorkoutName = persisted.activeWorkoutName;
+      nextState.activeDayType = persisted.activeDayType;
+      nextState.activeExercises = persisted.activeExercises ?? [];
+      nextState.restTimerActive = persisted.restTimerActive;
+      nextState.restTimerMinimized = persisted.restTimerMinimized;
+      nextState.restTimerSeconds = persisted.restTimerSeconds;
+      nextState.restTimerTotal = persisted.restTimerTotal;
+      nextState.restTimerEndTime = persisted.restTimerEndTime;
+    } else if (persisted) {
+      setSetting(ACTIVE_WORKOUT_STATE_KEY, '');
+    }
+
+    set(nextState);
   },
 
   getCurrentDayType: () => {
@@ -337,6 +402,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       activeDayType: dayType,
       activeExercises,
     });
+    persistActiveWorkoutState(get());
   },
 
   finishWorkout: () => {
@@ -383,6 +449,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       programStartDate: bumpedStart,
       pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
     });
+    persistActiveWorkoutState(get());
   },
 
   abortWorkout: () => {
@@ -402,6 +469,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       restTimerTotal: 0,
       restTimerEndTime: null,
     });
+    persistActiveWorkoutState(get());
   },
 
   skipRestDay: () => {
@@ -483,6 +551,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       }
       return { activeExercises: exercises };
     });
+    persistActiveWorkoutState(get());
   },
 
   completeSet: (exerciseIndex, setIndex, restSeconds) => {
@@ -528,6 +597,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       exercises[exerciseIndex] = { ...exercises[exerciseIndex], sets };
       return { activeExercises: exercises };
     });
+    persistActiveWorkoutState(get());
 
     if (restSeconds > 0 && get().restTimerEnabled && !isLastRemainingSet) {
       get().startRestTimer(restSeconds);
@@ -542,6 +612,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       exercises[exerciseIndex] = { ...exercises[exerciseIndex], sets };
       return { activeExercises: exercises };
     });
+    persistActiveWorkoutState(get());
     get().stopRestTimer();
   },
 
@@ -575,6 +646,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       };
       return { activeExercises: exercises };
     });
+    persistActiveWorkoutState(get());
   },
 
   removeSet: (exerciseIndex, setIndex) => {
@@ -597,12 +669,14 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       };
       return { activeExercises: exercises };
     });
+    persistActiveWorkoutState(get());
   },
 
   addExerciseToSession: (exerciseId) => {
     const built = buildActiveExerciseState(exerciseId);
     if (!built) return;
     set((state) => ({ activeExercises: [...state.activeExercises, built] }));
+    persistActiveWorkoutState(get());
   },
 
   removeExerciseFromSession: (exerciseIndex) => {
@@ -612,6 +686,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       exercises.splice(exerciseIndex, 1);
       return { activeExercises: exercises };
     });
+    persistActiveWorkoutState(get());
   },
 
   setPendingSubstitution: (templateExerciseId, replacementExerciseId) => {
@@ -630,6 +705,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       exercises[exerciseIndex] = { ...built, slotTemplateExerciseId: slotId };
       return { activeExercises: exercises };
     });
+    persistActiveWorkoutState(get());
     get().stopRestTimer();
   },
 
@@ -682,6 +758,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       restTimerTotal: seconds,
       restTimerEndTime: Date.now() + seconds * 1000,
     });
+    persistActiveWorkoutState(get());
   },
 
   stopRestTimer: () => {
@@ -692,10 +769,12 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       restTimerTotal: 0,
       restTimerEndTime: null,
     });
+    persistActiveWorkoutState(get());
   },
 
   setRestTimerMinimized: (minimized) => {
     set({ restTimerMinimized: minimized });
+    persistActiveWorkoutState(get());
   },
 
   tickRestTimer: () => {
@@ -705,6 +784,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       }
       return { restTimerSeconds: state.restTimerSeconds - 1 };
     });
+    persistActiveWorkoutState(get());
   },
 
   syncRestTimer: () => {
@@ -716,5 +796,6 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     } else {
       set({ restTimerSeconds: remaining });
     }
+    persistActiveWorkoutState(get());
   },
 }));

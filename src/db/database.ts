@@ -530,6 +530,15 @@ export function deleteIncompleteSession(sessionId: number): void {
   db.runSync('DELETE FROM workout_sessions WHERE id = ? AND completed_at IS NULL', [sessionId]);
 }
 
+/** True when the session exists and is still in-progress (completed_at is null). */
+export function isIncompleteSession(sessionId: number): boolean {
+  const row = getDb().getFirstSync<{ id: number }>(
+    'SELECT id FROM workout_sessions WHERE id = ? AND completed_at IS NULL',
+    [sessionId]
+  );
+  return !!row;
+}
+
 /** Delete a finished workout and its set logs. Returns false if the session does not exist or is not completed. */
 export function deleteCompletedWorkoutSession(sessionId: number): boolean {
   const db = getDb();
