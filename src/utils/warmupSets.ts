@@ -1,4 +1,5 @@
 import type { ActiveSet } from '../types';
+import type { WarmupPreset } from '../db/database';
 
 /**
  * Warm-up presets from working-set targets (percentages and rep pyramids).
@@ -58,10 +59,10 @@ export function buildWarmupPresets(
   workingReps: number,
   warmupCount: number,
   isTimed: boolean
-): { weight: string; reps: string }[] {
+): WarmupPreset[] {
   if (warmupCount <= 0) return [];
   const pcts = warmupWeightPercents(warmupCount);
-  const out: { weight: string; reps: string }[] = [];
+  const out: WarmupPreset[] = [];
   for (let i = 0; i < warmupCount; i++) {
     const w =
       workingWeight > 0 && pcts[i] != null ? String(Math.round(workingWeight * pcts[i])) : '';
@@ -77,6 +78,73 @@ export function buildWarmupPresets(
   return out;
 }
 
+function presetsHaveWeight(presets: WarmupPreset[]): boolean {
+  return presets.some((p) => String(p.weight ?? '').trim() !== '');
+}
+
+function warmupPresetsFromHistory(
+  prevWarmup: { weight?: number; reps?: number }[],
+  warmupCount: number
+): WarmupPreset[] {
+  return Array.from({ length: warmupCount }, (_, i) => {
+    const h = prevWarmup[i] ?? prevWarmup[prevWarmup.length - 1];
+    const wNum = Number(h?.weight) || 0;
+    const rNum = Number(h?.reps) || 0;
+    return {
+      weight: wNum > 0 ? String(Math.round(wNum)) : '',
+      reps: rNum > 0 ? String(rNum) : '',
+    };
+  });
+}
+
+/** Merge saved presets with calculated fallbacks when warmup count changes. */
+function mergeSavedWithCalculated(
+  saved: WarmupPreset[],
+  calculated: WarmupPreset[],
+  warmupCount: number
+): WarmupPreset[] {
+  return Array.from({ length: warmupCount }, (_, i) => {
+    const s = saved[i];
+    const c = calculated[i] ?? { weight: '', reps: '' };
+    if (s && String(s.weight ?? '').trim() !== '') {
+      return {
+        weight: s.weight,
+        reps: String(s.reps ?? '').trim() !== '' ? s.reps : c.reps,
+      };
+    }
+    return c;
+  });
+}
+
+/**
+ * Presets for a new session: saved values first, then last session warmups, then % of working weight.
+ */
+export function resolveInitialWarmupPresets(
+  saved: WarmupPreset[] | null,
+  prevWarmupHistory: { weight?: number; reps?: number }[],
+  workingWeight: number,
+  workingReps: number,
+  warmupCount: number,
+  isTimed: boolean
+): WarmupPreset[] {
+  if (warmupCount <= 0) return [];
+
+  const calculated = buildWarmupPresets(workingWeight, workingReps, warmupCount, isTimed);
+
+  if (saved && presetsHaveWeight(saved)) {
+    return mergeSavedWithCalculated(saved, calculated, warmupCount);
+  }
+
+  const histHasWeight = prevWarmupHistory.some((s) => Number(s.weight) > 0);
+  if (histHasWeight) {
+    const fromHist = warmupPresetsFromHistory(prevWarmupHistory, warmupCount);
+    return mergeSavedWithCalculated(fromHist, calculated, warmupCount);
+  }
+
+  return calculated;
+}
+
+/** Fill only incomplete warmup sets that still have empty weight or reps. */
 export function applyWarmupPresetsToIncompleteWarmups(
   sets: ActiveSet[],
   exerciseTargetReps: string,
@@ -100,6 +168,19 @@ export function applyWarmupPresetsToIncompleteWarmups(
     if (s.completed) return s;
     const p = presets[idx];
     if (!p) return s;
-    return { ...s, weight: p.weight, reps: p.reps };
+    const weightEmpty = String(s.weight ?? '').trim() === '';
+    const repsEmpty = String(s.reps ?? '').trim() === '';
+    if (!weightEmpty && !repsEmpty) return s;
+    return {
+      ...s,
+      weight: weightEmpty ? p.weight : s.weight,
+      reps: repsEmpty ? p.reps : s.reps,
+    };
   });
+}
+
+export function extractWarmupPresetsFromSets(sets: ActiveSet[]): WarmupPreset[] {
+  return sets
+    .filter((s) => s.setType === 'warmup')
+    .map((s) => ({ weight: s.weight, reps: s.reps }));
 }

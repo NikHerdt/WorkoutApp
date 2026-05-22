@@ -134,18 +134,19 @@ export default function WorkoutScreen() {
   function handleRemoveExercise(exerciseIndex: number) {
     const ex = activeExercises[exerciseIndex];
     const completedCount = ex.sets.filter((s) => s.completed).length;
-    if (completedCount > 0) {
-      setActionSheet({
-        title: 'Remove Exercise?',
-        message: `${ex.exerciseName} has ${completedCount} logged set${completedCount > 1 ? 's' : ''} that will be discarded.`,
-        actions: [
-          { label: 'Remove', style: 'destructive', onPress: () => removeExerciseFromSession(exerciseIndex) },
-          { label: 'Cancel', style: 'cancel' },
-        ],
-      });
-    } else {
-      removeExerciseFromSession(exerciseIndex);
-    }
+    const message =
+      completedCount > 0
+        ? `${ex.exerciseName} has ${completedCount} logged set${completedCount > 1 ? 's' : ''} that will be discarded.`
+        : `Remove ${ex.exerciseName} from this workout?`;
+
+    setActionSheet({
+      title: 'Remove Exercise?',
+      message,
+      actions: [
+        { label: 'Remove', style: 'destructive', onPress: () => removeExerciseFromSession(exerciseIndex) },
+        { label: 'Cancel', style: 'cancel' },
+      ],
+    });
   }
 
   if (activeExercises.length === 0) {

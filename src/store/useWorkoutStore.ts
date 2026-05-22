@@ -13,13 +13,17 @@ import {
   getExerciseById,
   getPhaseSubstitutionsForPhase,
   upsertPhaseSubstitution,
+  getSavedWarmupPresets,
+  saveWarmupPresets,
+  clearSavedWarmupPresets,
 } from '../db/database';
 import { SCHEDULE, DayType, ActiveSet, ActiveExerciseState } from '../types';
 import { getWeekCountForPhase } from '../data/programWeeks';
 import {
-  buildWarmupPresets,
   parseWorkingRepsFromTarget,
   applyWarmupPresetsToIncompleteWarmups,
+  resolveInitialWarmupPresets,
+  extractWarmupPresetsFromSets,
 } from '../utils/warmupSets';
 import { toLocalDateYmd } from '../utils/dateLocal';
 
@@ -145,6 +149,16 @@ function getCompletedWeeksBeforePhase(phaseId: number): number {
   return getWeekCountForPhase(1) + getWeekCountForPhase(2);
 }
 
+function persistWarmupPresetsForExercise(exerciseId: number, sets: ActiveSet[]): void {
+  const presets = extractWarmupPresetsFromSets(sets);
+  if (presets.length === 0) return;
+  if (presets.some((p) => String(p.weight ?? '').trim() !== '')) {
+    saveWarmupPresets(exerciseId, presets);
+  } else {
+    clearSavedWarmupPresets(exerciseId);
+  }
+}
+
 function renumberSets(sets: ActiveSet[]): ActiveSet[] {
   let warmupIdx = 0;
   let workingIdx = 0;
@@ -169,13 +183,21 @@ function buildActiveExerciseState(
   const isTimed = String(ex.target_reps ?? '').includes('HOLD');
   const prevSets = getLastSessionSetsForExercise(ex.id);
   const prevWorking = prevSets.filter((s: any) => s.set_type === 'working');
+  const prevWarmup = prevSets.filter((s: any) => s.set_type === 'warmup');
   const firstWorkingHist = prevWorking[0];
   const lastWorkingHist = prevWorking[prevWorking.length - 1];
   const lastWeight = Number(firstWorkingHist?.weight) || 0;
   const lastReps = Number(firstWorkingHist?.reps) || 0;
   const workingRepsForWarmups =
     lastReps > 0 ? lastReps : parseWorkingRepsFromTarget(ex.target_reps ?? '');
-  const warmupPresets = buildWarmupPresets(lastWeight, workingRepsForWarmups, ex.warmup_sets, isTimed);
+  const warmupPresets = resolveInitialWarmupPresets(
+    getSavedWarmupPresets(ex.id),
+    prevWarmup,
+    lastWeight,
+    workingRepsForWarmups,
+    ex.warmup_sets,
+    isTimed
+  );
 
   const sets: ActiveSet[] = [];
 
@@ -409,13 +431,14 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     const { activeSessionId, activeExercises } = get();
     if (!activeSessionId) return;
 
-    // Log all completed sets
-    for (const exercise of activeExercises) {
+    // Log all completed sets in session exercise order
+    activeExercises.forEach((exercise, exerciseOrder) => {
       for (const setItem of exercise.sets) {
         if (setItem.completed) {
           logSet(
             activeSessionId,
             exercise.exerciseId,
+            exerciseOrder,
             setItem.setNumber,
             setItem.setType,
             parseFloat(setItem.weight) || 0,
@@ -423,9 +446,13 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
           );
         }
       }
-    }
+    });
 
     completeSession(activeSessionId);
+
+    for (const exercise of activeExercises) {
+      persistWarmupPresetsForExercise(exercise.exerciseId, exercise.sets);
+    }
 
     let programStartDate = get().programStartDate;
     programStartDate = maybeUndoExplicitScheduleAdvance(programStartDate);
@@ -533,6 +560,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
 
       const warmupCount = sets.filter((s) => s.setType === 'warmup').length;
       const firstWorkingIdx = warmupCount;
+
       if (
         warmupCount > 0 &&
         setIndex === firstWorkingIdx &&
@@ -551,6 +579,13 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       }
       return { activeExercises: exercises };
     });
+    const updated = get().activeExercises[exerciseIndex];
+    if (updated) {
+      const changedSet = updated.sets[setIndex];
+      if (changedSet?.setType === 'warmup' && (field === 'weight' || field === 'reps')) {
+        persistWarmupPresetsForExercise(updated.exerciseId, updated.sets);
+      }
+    }
     persistActiveWorkoutState(get());
   },
 
@@ -706,7 +741,6 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       return { activeExercises: exercises };
     });
     persistActiveWorkoutState(get());
-    get().stopRestTimer();
   },
 
   setRestTimerEnabled: (enabled) => {

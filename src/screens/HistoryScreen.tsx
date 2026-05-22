@@ -81,13 +81,19 @@ export default function HistoryScreen() {
     }
   }
 
-  // Group sets by exercise
-  const groupedSets = sessionSets.reduce((acc: any, set: any) => {
+  // Group sets by exercise, preserving session exercise order from the query
+  const groupedSets: { name: string; muscle_group: string; sets: any[] }[] = [];
+  const exerciseIndexByName = new Map<string, number>();
+  for (const set of sessionSets) {
     const key = set.exercise_name;
-    if (!acc[key]) acc[key] = { name: key, muscle_group: set.muscle_group, sets: [] };
-    acc[key].sets.push(set);
-    return acc;
-  }, {});
+    let idx = exerciseIndexByName.get(key);
+    if (idx === undefined) {
+      idx = groupedSets.length;
+      exerciseIndexByName.set(key, idx);
+      groupedSets.push({ name: key, muscle_group: set.muscle_group, sets: [] });
+    }
+    groupedSets[idx].sets.push(set);
+  }
 
   function formatDuration(start: string, end: string) {
     const startMs = new Date(start).getTime();
@@ -234,7 +240,7 @@ export default function HistoryScreen() {
             ) : null}
 
             <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
-              {Object.values(groupedSets).map((exercise: any, idx) => (
+              {groupedSets.map((exercise, idx) => (
                 <View key={idx} style={styles.modalExercise}>
                   <View style={styles.modalExerciseHeader}>
                     <Text style={styles.modalExerciseName}>{exercise.name}</Text>

@@ -68,7 +68,6 @@ export default function SetRow({
         keyboardType="decimal-pad"
         placeholder={WEIGHT_UNIT}
         placeholderTextColor={colors.placeholder}
-        editable={!isCompleted}
         selectTextOnFocus
       />
 
@@ -80,7 +79,6 @@ export default function SetRow({
         keyboardType="number-pad"
         placeholder={isTimed ? 'sec' : 'reps'}
         placeholderTextColor={colors.placeholder}
-        editable={!isCompleted}
         selectTextOnFocus
       />
 

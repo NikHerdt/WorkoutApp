@@ -67,6 +67,7 @@ export function initDatabase(): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
       exercise_id INTEGER NOT NULL,
+      exercise_order INTEGER NOT NULL DEFAULT 0,
       set_number INTEGER NOT NULL,
       set_type TEXT NOT NULL DEFAULT 'working',
       weight REAL DEFAULT 0,
@@ -91,6 +92,7 @@ export function initDatabase(): void {
 
   migrateKgToLbs(database);
   migrateAddWorkoutDate(database);
+  migrateAddExerciseOrder(database);
 
   const seeded = database.getFirstSync<{ value: string }>(
     "SELECT value FROM settings WHERE key = 'seeded'"
@@ -153,6 +155,64 @@ function migrateAddWorkoutDate(database: SQLite.SQLiteDatabase): void {
   database.execSync('PRAGMA user_version = 3');
 }
 
+/**
+ * One-time: store per-session exercise sequence on set_logs and backfill from
+ * workout template order (with phase substitutions) for existing rows (user_version < 4).
+ */
+function migrateAddExerciseOrder(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  const v = verRow?.user_version ?? 0;
+  if (v >= 4) return;
+
+  const cols = database.getAllSync<{ name: string }>('PRAGMA table_info(set_logs)');
+  if (!cols.some((c) => c.name === 'exercise_order')) {
+    database.execSync('ALTER TABLE set_logs ADD COLUMN exercise_order INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const sessions = database.getAllSync<{ id: number; workout_id: number; phase_id: number }>(
+    `SELECT DISTINCT ws.id, ws.workout_id, ws.phase_id
+     FROM workout_sessions ws
+     INNER JOIN set_logs sl ON sl.session_id = ws.id`
+  );
+
+  for (const session of sessions) {
+    const templateExercises = database.getAllSync<{ id: number; order_index: number }>(
+      'SELECT id, order_index FROM exercises WHERE workout_id = ? ORDER BY order_index',
+      [session.workout_id]
+    );
+
+    const subs = getPhaseSubstitutionsForPhase(session.phase_id);
+    const orderByExerciseId = new Map<number, number>();
+    for (const ex of templateExercises) {
+      const effectiveId = subs[ex.id] ?? ex.id;
+      orderByExerciseId.set(effectiveId, ex.order_index);
+      orderByExerciseId.set(ex.id, ex.order_index);
+    }
+
+    let nextOrder =
+      templateExercises.length > 0
+        ? Math.max(...templateExercises.map((ex) => ex.order_index)) + 1
+        : 0;
+
+    const logs = database.getAllSync<{ id: number; exercise_id: number }>(
+      'SELECT id, exercise_id FROM set_logs WHERE session_id = ?',
+      [session.id]
+    );
+
+    for (const log of logs) {
+      let order = orderByExerciseId.get(log.exercise_id);
+      if (order === undefined) {
+        order = nextOrder;
+        nextOrder += 1;
+        orderByExerciseId.set(log.exercise_id, order);
+      }
+      database.runSync('UPDATE set_logs SET exercise_order = ? WHERE id = ?', [order, log.id]);
+    }
+  }
+
+  database.execSync('PRAGMA user_version = 4');
+}
+
 function seedDatabase(database: SQLite.SQLiteDatabase): void {
   for (const phase of SEED_DATA) {
     const phaseResult = database.runSync(
@@ -208,6 +268,56 @@ export function setSetting(key: string, value: string): void {
     'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
     [key, value]
   );
+}
+
+const EXERCISE_WARMUP_PRESETS_KEY = 'exercise_warmup_presets';
+
+export type WarmupPreset = { weight: string; reps: string };
+
+/** Saved warmup weights/reps per exercise (from last edit or finished workout). */
+export function getSavedWarmupPresets(exerciseId: number): WarmupPreset[] | null {
+  const raw = getSetting(EXERCISE_WARMUP_PRESETS_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, WarmupPreset[]>;
+    const entry = parsed[String(exerciseId)];
+    if (!Array.isArray(entry)) return null;
+    return entry.map((p) => ({
+      weight: String(p?.weight ?? ''),
+      reps: String(p?.reps ?? ''),
+    }));
+  } catch {
+    return null;
+  }
+}
+
+export function saveWarmupPresets(exerciseId: number, presets: WarmupPreset[]): void {
+  const raw = getSetting(EXERCISE_WARMUP_PRESETS_KEY);
+  let store: Record<string, WarmupPreset[]> = {};
+  if (raw) {
+    try {
+      store = JSON.parse(raw) as Record<string, WarmupPreset[]>;
+    } catch {
+      store = {};
+    }
+  }
+  store[String(exerciseId)] = presets.map((p) => ({
+    weight: String(p.weight ?? ''),
+    reps: String(p.reps ?? ''),
+  }));
+  setSetting(EXERCISE_WARMUP_PRESETS_KEY, JSON.stringify(store));
+}
+
+export function clearSavedWarmupPresets(exerciseId: number): void {
+  const raw = getSetting(EXERCISE_WARMUP_PRESETS_KEY);
+  if (!raw) return;
+  try {
+    const store = JSON.parse(raw) as Record<string, WarmupPreset[]>;
+    delete store[String(exerciseId)];
+    setSetting(EXERCISE_WARMUP_PRESETS_KEY, JSON.stringify(store));
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Body weight in lbs for a calendar day (YYYY-MM-DD). Replaces any existing entry for that date. */
@@ -582,7 +692,7 @@ export function getSessionDetail(sessionId: number) {
      FROM set_logs sl
      JOIN exercises e ON sl.exercise_id = e.id
      WHERE sl.session_id = ?
-     ORDER BY sl.exercise_id, sl.set_number`,
+     ORDER BY sl.exercise_order, sl.set_number`,
     [sessionId]
   );
 }
@@ -591,6 +701,7 @@ export function getSessionDetail(sessionId: number) {
 export function logSet(
   sessionId: number,
   exerciseId: number,
+  exerciseOrder: number,
   setNumber: number,
   setType: string,
   weight: number,
@@ -598,9 +709,19 @@ export function logSet(
   rpe?: number
 ): void {
   getDb().runSync(
-    `INSERT INTO set_logs (session_id, exercise_id, set_number, set_type, weight, reps, rpe, completed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [sessionId, exerciseId, setNumber, setType, weight, reps, rpe ?? null, new Date().toISOString()]
+    `INSERT INTO set_logs (session_id, exercise_id, exercise_order, set_number, set_type, weight, reps, rpe, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      sessionId,
+      exerciseId,
+      exerciseOrder,
+      setNumber,
+      setType,
+      weight,
+      reps,
+      rpe ?? null,
+      new Date().toISOString(),
+    ]
   );
 }
 
