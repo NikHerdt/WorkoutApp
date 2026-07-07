@@ -6,6 +6,7 @@ import AppNavigator from './src/navigation/AppNavigator';
 import { useWorkoutStore } from './src/store/useWorkoutStore';
 import { colors } from './src/theme/colors';
 import { requestNotificationPermissions } from './src/utils/restTimerNotification';
+import { retryPendingBackup } from './src/services/cloudBackup';
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -16,6 +17,7 @@ export default function App() {
       initDatabase();
       useWorkoutStore.getState().loadSettings();
       setReady(true);
+      retryPendingBackup();
     } catch (e) {
       setError(String(e));
     }

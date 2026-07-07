@@ -88,11 +88,29 @@ export function initDatabase(): void {
       weight_lbs REAL NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS programs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      is_builtin INTEGER DEFAULT 0,
+      phase_id INTEGER,
+      created_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS program_days (
+      program_id INTEGER NOT NULL,
+      day_index INTEGER NOT NULL,
+      workout_id INTEGER,
+      PRIMARY KEY (program_id, day_index),
+      FOREIGN KEY (program_id) REFERENCES programs(id)
+    );
   `);
 
   migrateKgToLbs(database);
   migrateAddWorkoutDate(database);
   migrateAddExerciseOrder(database);
+  migrateAddCustomPhaseFlag(database);
+  ensureBuiltinProgram(database);
 
   const seeded = database.getFirstSync<{ value: string }>(
     "SELECT value FROM settings WHERE key = 'seeded'"
@@ -211,6 +229,39 @@ function migrateAddExerciseOrder(database: SQLite.SQLiteDatabase): void {
   }
 
   database.execSync('PRAGMA user_version = 4');
+}
+
+/** One-time: mark phases owned by custom programs so they stay out of the phase picker (user_version < 5). */
+function migrateAddCustomPhaseFlag(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  const v = verRow?.user_version ?? 0;
+  if (v >= 5) return;
+
+  const cols = database.getAllSync<{ name: string }>('PRAGMA table_info(phases)');
+  if (!cols.some((c) => c.name === 'is_custom')) {
+    database.execSync('ALTER TABLE phases ADD COLUMN is_custom INTEGER DEFAULT 0');
+  }
+
+  database.execSync('PRAGMA user_version = 5');
+}
+
+/** Idempotent: the preprogrammed PPL×UL plan is represented as a builtin program row. */
+function ensureBuiltinProgram(database: SQLite.SQLiteDatabase): void {
+  const existing = database.getFirstSync<{ id: number }>(
+    'SELECT id FROM programs WHERE is_builtin = 1'
+  );
+  let builtinId = existing?.id;
+  if (builtinId == null) {
+    const result = database.runSync(
+      'INSERT INTO programs (name, is_builtin, phase_id, created_at) VALUES (?, 1, NULL, ?)',
+      ['PPL × UL (built-in)', new Date().toISOString()]
+    );
+    builtinId = result.lastInsertRowId;
+  }
+  database.runSync(
+    'INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)',
+    [ACTIVE_PROGRAM_ID_KEY, String(builtinId)]
+  );
 }
 
 function seedDatabase(database: SQLite.SQLiteDatabase): void {
@@ -407,7 +458,161 @@ export function upsertPhaseSubstitution(
 // Phases
 export function getAllPhases() {
   return getDb().getAllSync<{ id: number; name: string; description: string }>(
-    'SELECT * FROM phases ORDER BY id'
+    'SELECT * FROM phases WHERE COALESCE(is_custom, 0) = 0 ORDER BY id'
+  );
+}
+
+// Programs
+const ACTIVE_PROGRAM_ID_KEY = 'active_program_id';
+export const PROGRAM_DAY_COUNT = 7;
+
+export interface ProgramRow {
+  id: number;
+  name: string;
+  is_builtin: number;
+  phase_id: number | null;
+  created_at: string | null;
+}
+
+export interface ProgramDayRow {
+  day_index: number;
+  workout_id: number | null;
+  workout_name: string | null;
+}
+
+export function getAllPrograms(): ProgramRow[] {
+  return getDb().getAllSync<ProgramRow>(
+    'SELECT * FROM programs ORDER BY is_builtin DESC, id'
+  );
+}
+
+export function getProgramById(id: number): ProgramRow | null {
+  return getDb().getFirstSync<ProgramRow>('SELECT * FROM programs WHERE id = ?', [id]) ?? null;
+}
+
+export function getBuiltinProgram(): ProgramRow {
+  const row = getDb().getFirstSync<ProgramRow>('SELECT * FROM programs WHERE is_builtin = 1');
+  if (!row) throw new Error('Builtin program row missing');
+  return row;
+}
+
+/** The program the schedule currently runs on. Falls back to the builtin plan. */
+export function getActiveProgram(): ProgramRow {
+  const raw = getSetting(ACTIVE_PROGRAM_ID_KEY);
+  const id = raw ? Number(raw) : NaN;
+  if (Number.isFinite(id)) {
+    const row = getProgramById(id);
+    if (row) return row;
+  }
+  return getBuiltinProgram();
+}
+
+export function setActiveProgramId(programId: number): void {
+  setSetting(ACTIVE_PROGRAM_ID_KEY, String(programId));
+}
+
+/** Create an empty custom program: a hidden phase to own its workouts plus 7 rest days. */
+export function createCustomProgram(name: string): number {
+  const db = getDb();
+  const phaseResult = db.runSync(
+    'INSERT INTO phases (name, description, is_custom) VALUES (?, ?, 1)',
+    [name.trim(), 'Custom program']
+  );
+  const phaseId = phaseResult.lastInsertRowId;
+  const result = db.runSync(
+    'INSERT INTO programs (name, is_builtin, phase_id, created_at) VALUES (?, 0, ?, ?)',
+    [name.trim(), phaseId, new Date().toISOString()]
+  );
+  const programId = result.lastInsertRowId;
+  for (let day = 0; day < PROGRAM_DAY_COUNT; day++) {
+    db.runSync(
+      'INSERT INTO program_days (program_id, day_index, workout_id) VALUES (?, ?, NULL)',
+      [programId, day]
+    );
+  }
+  return programId;
+}
+
+export function renameCustomProgram(programId: number, name: string): void {
+  const program = getProgramById(programId);
+  if (!program || program.is_builtin) return;
+  const db = getDb();
+  db.runSync('UPDATE programs SET name = ? WHERE id = ?', [name.trim(), programId]);
+  if (program.phase_id != null) {
+    db.runSync('UPDATE phases SET name = ? WHERE id = ?', [name.trim(), program.phase_id]);
+  }
+}
+
+/**
+ * Delete a custom program and its schedule. Workouts/exercises/sessions logged under it
+ * are kept so history and analytics remain intact.
+ */
+export function deleteCustomProgram(programId: number): void {
+  const program = getProgramById(programId);
+  if (!program || program.is_builtin) return;
+  const db = getDb();
+  db.runSync('DELETE FROM program_days WHERE program_id = ?', [programId]);
+  db.runSync('DELETE FROM programs WHERE id = ?', [programId]);
+  const active = getSetting(ACTIVE_PROGRAM_ID_KEY);
+  if (active === String(programId)) {
+    setActiveProgramId(getBuiltinProgram().id);
+  }
+}
+
+/** The 7-day cycle for a program, with workout names resolved (workout_id NULL = rest). */
+export function getProgramDays(programId: number): ProgramDayRow[] {
+  const rows = getDb().getAllSync<ProgramDayRow>(
+    `SELECT pd.day_index, pd.workout_id, w.name as workout_name
+     FROM program_days pd
+     LEFT JOIN workouts w ON pd.workout_id = w.id
+     WHERE pd.program_id = ?
+     ORDER BY pd.day_index`,
+    [programId]
+  );
+  // Normalize to exactly PROGRAM_DAY_COUNT entries.
+  const byIndex = new Map(rows.map((r) => [r.day_index, r]));
+  const out: ProgramDayRow[] = [];
+  for (let day = 0; day < PROGRAM_DAY_COUNT; day++) {
+    out.push(byIndex.get(day) ?? { day_index: day, workout_id: null, workout_name: null });
+  }
+  return out;
+}
+
+export function setProgramDayWorkout(
+  programId: number,
+  dayIndex: number,
+  workoutId: number | null
+): void {
+  getDb().runSync(
+    'INSERT OR REPLACE INTO program_days (program_id, day_index, workout_id) VALUES (?, ?, ?)',
+    [programId, dayIndex, workoutId]
+  );
+}
+
+/** Create an empty workout owned by the program's custom phase. */
+export function createProgramWorkout(programId: number, name: string): number {
+  const program = getProgramById(programId);
+  if (!program || program.phase_id == null) {
+    throw new Error('Program not found or has no phase');
+  }
+  const result = getDb().runSync(
+    'INSERT INTO workouts (phase_id, name, day_type) VALUES (?, ?, ?)',
+    [program.phase_id, name.trim(), 'custom']
+  );
+  return result.lastInsertRowId;
+}
+
+/** All workouts belonging to a custom program (via its phase). */
+export function getProgramWorkouts(programId: number) {
+  const program = getProgramById(programId);
+  if (!program || program.phase_id == null) return [];
+  return getWorkoutsByPhase(program.phase_id);
+}
+
+export function getWorkoutById(workoutId: number) {
+  return getDb().getFirstSync<{ id: number; phase_id: number; name: string; day_type: string }>(
+    'SELECT * FROM workouts WHERE id = ?',
+    [workoutId]
   );
 }
 

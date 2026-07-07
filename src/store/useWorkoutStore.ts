@@ -16,7 +16,13 @@ import {
   getSavedWarmupPresets,
   saveWarmupPresets,
   clearSavedWarmupPresets,
+  getActiveProgram,
+  getProgramDays,
+  setActiveProgramId,
+  getWorkoutById,
+  ProgramDayRow,
 } from '../db/database';
+import { backupToCloudSilently } from '../services/cloudBackup';
 import { SCHEDULE, DayType, ActiveSet, ActiveExerciseState } from '../types';
 import { getWeekCountForPhase } from '../data/programWeeks';
 import {
@@ -56,6 +62,7 @@ function compareYmd(a: string, b: string): number {
  */
 const SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY = 'schedule_explicit_advance_ymd';
 const ACTIVE_WORKOUT_STATE_KEY = 'active_workout_state_v1';
+const EMPTY_PROGRAM_DAYS: ProgramDayRow[] = [];
 
 type PersistedActiveWorkoutState = {
   activeSessionId: number;
@@ -141,6 +148,27 @@ function resolveProgramProgress(programStartYmd: string): {
   cycleWeek -= phase2Weeks;
 
   return { scheduleDay, currentPhaseId: 3, phaseWeek: cycleWeek + 1 };
+}
+
+/**
+ * State fields to apply after the schedule anchor moves. The builtin plan derives
+ * phase/week from the calendar; a custom program keeps its own phase and has no weeks.
+ */
+function progressStateUpdate(
+  progress: { scheduleDay: number; currentPhaseId: number; phaseWeek: number },
+  programStartDate: string,
+  isBuiltinProgram: boolean
+): Partial<WorkoutState> {
+  if (isBuiltinProgram) {
+    return {
+      scheduleDay: progress.scheduleDay,
+      currentPhaseId: progress.currentPhaseId,
+      phaseWeek: progress.phaseWeek,
+      programStartDate,
+      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
+    };
+  }
+  return { scheduleDay: progress.scheduleDay, programStartDate };
 }
 
 function getCompletedWeeksBeforePhase(phaseId: number): number {
@@ -254,6 +282,13 @@ interface WorkoutState {
   /** Local YYYY-MM-DD marking Day 1 / Week 1 / Phase 1 anchor date. */
   programStartDate: string;
 
+  // Active program (builtin PPL×UL plan or a user-created regimen)
+  activeProgramId: number | null;
+  activeProgramIsBuiltin: boolean;
+  activeProgramName: string;
+  /** 7-day cycle for a custom program (empty for the builtin plan). */
+  programDays: ProgramDayRow[];
+
   // Active workout session
   activeSessionId: number | null;
   activeWorkoutId: number | null;
@@ -279,6 +314,10 @@ interface WorkoutState {
   // Actions
   loadSettings: () => void;
   getCurrentDayType: () => DayType;
+  /** Today's workout for the active program (builtin or custom). Null on rest days. */
+  getTodayWorkout: () => { id: number; name: string } | null;
+  /** Switch the active program. Refused (returns false) while a workout is in progress. */
+  setActiveProgram: (programId: number) => boolean;
   startWorkout: () => Promise<void>;
   finishWorkout: () => void;
   abortWorkout: () => void;
@@ -315,6 +354,10 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   currentPhaseId: 1,
   phaseWeek: 1,
   programStartDate: toLocalDateYmd(),
+  activeProgramId: null,
+  activeProgramIsBuiltin: true,
+  activeProgramName: '',
+  programDays: EMPTY_PROGRAM_DAYS,
   activeSessionId: null,
   activeWorkoutId: null,
   activeWorkoutName: '',
@@ -370,6 +413,23 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       restTimerEnabled: restTimerEnabledStr === null ? true : restTimerEnabledStr === '1',
     };
 
+    const program = getActiveProgram();
+    nextState.activeProgramId = program.id;
+    nextState.activeProgramIsBuiltin = !!program.is_builtin;
+    nextState.activeProgramName = program.name;
+    if (program.is_builtin) {
+      // Stable reference so callbacks depending on programDays don't churn every loadSettings() call.
+      nextState.programDays = EMPTY_PROGRAM_DAYS;
+    } else {
+      // Custom programs have a fixed phase and no week progression.
+      nextState.programDays = getProgramDays(program.id);
+      if (program.phase_id != null) {
+        nextState.currentPhaseId = program.phase_id;
+        nextState.pendingSubstitutions = getPhaseSubstitutionsForPhase(program.phase_id);
+      }
+      nextState.phaseWeek = 1;
+    }
+
     const persisted = readPersistedActiveWorkoutState();
     if (persisted && isIncompleteSession(persisted.activeSessionId)) {
       nextState.activeSessionId = persisted.activeSessionId;
@@ -390,21 +450,47 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   getCurrentDayType: () => {
-    const { scheduleDay } = get();
+    const { scheduleDay, activeProgramIsBuiltin, programDays } = get();
+    if (!activeProgramIsBuiltin) {
+      return programDays[scheduleDay % 7]?.workout_id != null ? SCHEDULE[0] : 'rest';
+    }
     return SCHEDULE[scheduleDay % 7];
   },
 
+  getTodayWorkout: () => {
+    const { scheduleDay, currentPhaseId, activeProgramIsBuiltin, programDays } = get();
+    if (!activeProgramIsBuiltin) {
+      const workoutId = programDays[scheduleDay % 7]?.workout_id;
+      if (workoutId == null) return null;
+      const workout = getWorkoutById(workoutId);
+      return workout ? { id: workout.id, name: workout.name } : null;
+    }
+    const dayType = SCHEDULE[scheduleDay % 7];
+    if (dayType === 'rest') return null;
+    const workout = getWorkoutByPhaseAndType(currentPhaseId, dayType);
+    return workout ? { id: workout.id, name: workout.name } : null;
+  },
+
+  setActiveProgram: (programId) => {
+    if (get().activeSessionId) return false;
+    setActiveProgramId(programId);
+    get().loadSettings();
+    return true;
+  },
+
   startWorkout: async () => {
-    const { currentPhaseId, activeSessionId, getCurrentDayType } = get();
+    const { activeSessionId, activeProgramIsBuiltin, getTodayWorkout, getCurrentDayType } = get();
 
     // Already have an active session
     if (activeSessionId) return;
 
-    const dayType = getCurrentDayType();
-    if (dayType === 'rest') return;
+    const today = getTodayWorkout();
+    if (!today) return;
 
-    const workout = getWorkoutByPhaseAndType(currentPhaseId, dayType);
+    const workout = getWorkoutById(today.id);
     if (!workout) return;
+    const dayType = activeProgramIsBuiltin ? getCurrentDayType() : null;
+    const currentPhaseId = activeProgramIsBuiltin ? get().currentPhaseId : workout.phase_id;
 
     const exercises = getExercisesByWorkout(workout.id);
     const sessionId = createSession(workout.id, currentPhaseId);
@@ -470,13 +556,10 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       restTimerActive: false,
       restTimerMinimized: false,
       restTimerEndTime: null,
-      scheduleDay: progress.scheduleDay,
-      currentPhaseId: progress.currentPhaseId,
-      phaseWeek: progress.phaseWeek,
-      programStartDate: bumpedStart,
-      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
+      ...progressStateUpdate(progress, bumpedStart, get().activeProgramIsBuiltin),
     });
     persistActiveWorkoutState(get());
+    backupToCloudSilently();
   },
 
   abortWorkout: () => {
@@ -506,13 +589,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     setSetting('program_start_date', nextStart);
     setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, toLocalDateYmd());
     const progress = resolveProgramProgress(nextStart);
-    set({
-      scheduleDay: progress.scheduleDay,
-      currentPhaseId: progress.currentPhaseId,
-      phaseWeek: progress.phaseWeek,
-      programStartDate: nextStart,
-      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
-    });
+    set(progressStateUpdate(progress, nextStart, get().activeProgramIsBuiltin));
   },
 
   setScheduleDay: (dayIndex: number) => {
@@ -523,16 +600,11 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, '');
     setSetting('program_start_date', nextStart);
     const progress = resolveProgramProgress(nextStart);
-    set({
-      scheduleDay: progress.scheduleDay,
-      currentPhaseId: progress.currentPhaseId,
-      phaseWeek: progress.phaseWeek,
-      programStartDate: nextStart,
-      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
-    });
+    set(progressStateUpdate(progress, nextStart, get().activeProgramIsBuiltin));
   },
 
   setPhase: (phaseId: number) => {
+    if (!get().activeProgramIsBuiltin) return;
     const weekOffsetToPhaseStart =
       (phaseId <= 1 ? 0 : getWeekCountForPhase(1)) +
       (phaseId <= 2 ? 0 : getWeekCountForPhase(2));
@@ -774,13 +846,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     setSetting('program_start_date_migrated_v2', '1');
     setSetting(SCHEDULE_EXPLICIT_ADVANCE_YMD_KEY, '');
     const progress = resolveProgramProgress(normalized);
-    set({
-      scheduleDay: progress.scheduleDay,
-      currentPhaseId: progress.currentPhaseId,
-      phaseWeek: progress.phaseWeek,
-      programStartDate: normalized,
-      pendingSubstitutions: getPhaseSubstitutionsForPhase(progress.currentPhaseId),
-    });
+    set(progressStateUpdate(progress, normalized, get().activeProgramIsBuiltin));
     return true;
   },
 

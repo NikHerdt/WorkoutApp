@@ -12,6 +12,8 @@ import ExerciseDetailScreen from '../screens/ExerciseDetailScreen';
 import AddExerciseScreen from '../screens/AddExerciseScreen';
 import EditWorkoutScreen from '../screens/EditWorkoutScreen';
 import AnalyticsScreen from '../screens/AnalyticsScreen';
+import ProgramsScreen from '../screens/ProgramsScreen';
+import ProgramEditScreen from '../screens/ProgramEditScreen';
 import RestTimer from '../components/RestTimer';
 
 export type ExerciseDetailParams = {
@@ -26,6 +28,8 @@ export type HomeStackParamList = {
   Workout: undefined;
   ExerciseDetail: ExerciseDetailParams;
   EditWorkout: { workoutId: number; workoutName: string };
+  Programs: undefined;
+  ProgramEdit: { programId: number; programName: string };
 };
 
 export type ExercisesStackParamList = {
@@ -63,6 +67,8 @@ function HomeStackNavigator() {
       <HomeStack.Screen name="Workout" component={WorkoutScreen} options={{ title: "Workout", headerBackTitle: '' }} />
       <HomeStack.Screen name="ExerciseDetail" component={ExerciseDetailScreen} options={({ route }) => ({ title: route.params.exerciseName, headerBackTitle: '' })} />
       <HomeStack.Screen name="EditWorkout" component={EditWorkoutScreen} options={({ route }) => ({ title: `Edit: ${route.params.workoutName}`, headerBackTitle: '' })} />
+      <HomeStack.Screen name="Programs" component={ProgramsScreen} options={{ title: 'Programs', headerBackTitle: '' }} />
+      <HomeStack.Screen name="ProgramEdit" component={ProgramEditScreen} options={({ route }) => ({ title: route.params.programName, headerBackTitle: '' })} />
     </HomeStack.Navigator>
   );
 }

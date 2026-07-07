@@ -22,6 +22,7 @@ import {
   getPhaseSubstitutionsForPhase,
 } from '../db/database';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
+import CloudSyncSettings from '../components/CloudSyncSettings';
 import { SCHEDULE, DAY_LABELS, DayType } from '../types';
 import { getWeekCountForPhase, projectPhaseAfterProgramWeeks } from '../data/programWeeks';
 import { AppConfirmModal, AppNoticeModal } from '../components/AppModalDialogs';
@@ -52,6 +53,15 @@ const DAY_COLORS: Record<DayType, string> = {
   rest: '#555555',
 };
 
+/** Accent colors for custom-program training days, keyed by day index. */
+const CUSTOM_DAY_PALETTE = ['#FF6B35', '#4A9EFF', '#A78BFA', '#34D399', '#FF6B9D', '#4ADEDE', '#E8F05C'];
+
+/** Compact label for the 7-column week grid. */
+function shortDayLabel(name: string): string {
+  const first = name.trim().split(/\s+/)[0] ?? name;
+  return first.length > 7 ? `${first.slice(0, 6)}…` : first;
+}
+
 export default function HomeScreen() {
   const navigation = useNavigation<Nav>();
   const pendingSubstitutions = useWorkoutStore((s) => s.pendingSubstitutions);
@@ -69,6 +79,10 @@ export default function HomeScreen() {
     abortWorkout,
     restTimerEnabled,
     setRestTimerEnabled,
+    activeProgramIsBuiltin,
+    activeProgramName,
+    programDays,
+    getTodayWorkout,
   } = useWorkoutStore();
   const [phases, setPhases] = useState<any[]>([]);
   const [todaysExercises, setTodaysExercises] = useState<any[]>([]);
@@ -81,14 +95,9 @@ export default function HomeScreen() {
   const [discardWorkoutConfirmOpen, setDiscardWorkoutConfirmOpen] = useState(false);
 
   const refreshTodayExercises = useCallback(() => {
-    const todayType = getCurrentDayType();
-    if (todayType !== 'rest') {
-      const workout = getWorkoutByPhaseAndType(currentPhaseId, todayType);
-      setTodaysExercises(workout ? getExercisesByWorkout(workout.id) : []);
-    } else {
-      setTodaysExercises([]);
-    }
-  }, [currentPhaseId, getCurrentDayType]);
+    const workout = getTodayWorkout();
+    setTodaysExercises(workout ? getExercisesByWorkout(workout.id) : []);
+  }, [currentPhaseId, getTodayWorkout, activeProgramIsBuiltin]);
 
   useEffect(() => {
     loadSettings();
@@ -119,20 +128,58 @@ export default function HomeScreen() {
   );
 
   const previewSubstitutionMap = useMemo(() => {
-    if (scheduleWeekOffset === 0) return pendingSubstitutions;
+    if (scheduleWeekOffset === 0 || !activeProgramIsBuiltin) return pendingSubstitutions;
     return getPhaseSubstitutionsForPhase(projectedPhase.phaseId);
-  }, [scheduleWeekOffset, pendingSubstitutions, projectedPhase.phaseId]);
+  }, [scheduleWeekOffset, pendingSubstitutions, projectedPhase.phaseId, activeProgramIsBuiltin]);
 
   const previewExercises = useMemo(() => {
+    if (schedulePreviewDayIndex === null) return [];
+    if (!activeProgramIsBuiltin) {
+      const workoutId = programDays[schedulePreviewDayIndex]?.workout_id;
+      return workoutId != null ? getExercisesByWorkout(workoutId) : [];
+    }
     if (previewDayType === null || previewDayType === 'rest') return [];
     const workout = getWorkoutByPhaseAndType(projectedPhase.phaseId, previewDayType);
     return workout ? getExercisesByWorkout(workout.id) : [];
-  }, [previewDayType, projectedPhase.phaseId]);
+  }, [previewDayType, projectedPhase.phaseId, schedulePreviewDayIndex, activeProgramIsBuiltin, programDays]);
+
+  /** One cell per day of the week grid, valid for both program kinds. */
+  const weekCells = useMemo(() => {
+    if (activeProgramIsBuiltin) {
+      return SCHEDULE.map((type, i) => ({
+        key: i,
+        label: DAY_LABELS[type],
+        color: DAY_COLORS[type],
+        isRest: type === 'rest',
+        fullLabel: DAY_LABELS[type],
+      }));
+    }
+    return programDays.map((d, i) => ({
+      key: i,
+      label: d.workout_id == null ? 'Rest' : shortDayLabel(d.workout_name ?? 'Workout'),
+      color: d.workout_id == null ? DAY_COLORS.rest : CUSTOM_DAY_PALETTE[i % CUSTOM_DAY_PALETTE.length],
+      isRest: d.workout_id == null,
+      fullLabel: d.workout_name ?? 'Rest',
+    }));
+  }, [activeProgramIsBuiltin, programDays]);
+
+  const previewIsRest =
+    schedulePreviewDayIndex !== null && (weekCells[schedulePreviewDayIndex]?.isRest ?? true);
+  const previewTitle =
+    schedulePreviewDayIndex !== null ? weekCells[schedulePreviewDayIndex]?.fullLabel ?? '' : '';
 
   const dayType = getCurrentDayType();
-  const isRest = dayType === 'rest';
+  const todayWorkout = getTodayWorkout();
+  const isRest = !todayWorkout;
   const currentPhase = phases.find((p) => p.id === currentPhaseId);
-  const accentColor = DAY_COLORS[dayType];
+  const accentColor = activeProgramIsBuiltin
+    ? DAY_COLORS[dayType]
+    : isRest
+      ? DAY_COLORS.rest
+      : CUSTOM_DAY_PALETTE[(scheduleDay % 7) % CUSTOM_DAY_PALETTE.length];
+  const todayTitle = activeProgramIsBuiltin
+    ? `${DAY_LABELS[dayType]}${!isRest ? ' Day' : ''}`
+    : todayWorkout?.name ?? 'Rest';
 
   function handleStartWorkout() {
     navigation.navigate('Workout');
@@ -147,21 +194,31 @@ export default function HomeScreen() {
       <StatusBar barStyle="light-content" backgroundColor={colors.background} />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
 
-        {/* Phase selector */}
-        <TouchableOpacity
-          style={styles.phaseChip}
-          onPress={() => setShowPhaseSelect(!showPhaseSelect)}
-        >
-          <Text style={styles.phaseChipText}>
-            {currentPhase?.name ?? 'Phase 1'} · Week {phaseWeek} of {getWeekCountForPhase(currentPhaseId)}
-            {currentPhase?.description
-              ? ` · ${currentPhase.description.split('(')[1]?.replace(')', '') ?? ''}`
-              : ''}
-          </Text>
-          <Text style={styles.chevron}>{showPhaseSelect ? '▲' : '▼'}</Text>
-        </TouchableOpacity>
+        {/* Phase selector (builtin) / program chip (custom) */}
+        {activeProgramIsBuiltin ? (
+          <TouchableOpacity
+            style={styles.phaseChip}
+            onPress={() => setShowPhaseSelect(!showPhaseSelect)}
+          >
+            <Text style={styles.phaseChipText}>
+              {currentPhase?.name ?? 'Phase 1'} · Week {phaseWeek} of {getWeekCountForPhase(currentPhaseId)}
+              {currentPhase?.description
+                ? ` · ${currentPhase.description.split('(')[1]?.replace(')', '') ?? ''}`
+                : ''}
+            </Text>
+            <Text style={styles.chevron}>{showPhaseSelect ? '▲' : '▼'}</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.phaseChip}
+            onPress={() => navigation.navigate('Programs')}
+          >
+            <Text style={styles.phaseChipText}>{activeProgramName} · custom program</Text>
+            <Text style={styles.chevron}>›</Text>
+          </TouchableOpacity>
+        )}
 
-        {showPhaseSelect && (
+        {showPhaseSelect && activeProgramIsBuiltin && (
           <View style={styles.phaseDropdown}>
             {phases.map((phase) => (
               <TouchableOpacity
@@ -187,8 +244,7 @@ export default function HomeScreen() {
             <View>
               <Text style={styles.todayLabel}>TODAY</Text>
               <Text style={[styles.dayType, { color: accentColor }]}>
-                {DAY_LABELS[dayType]}
-                {!isRest ? ' Day' : ''}
+                {todayTitle}
               </Text>
             </View>
             <TouchableOpacity
@@ -247,7 +303,7 @@ export default function HomeScreen() {
               <Text style={styles.sectionTitle}>Today's exercises</Text>
               <TouchableOpacity
                 onPress={() => {
-                  const workout = getWorkoutByPhaseAndType(currentPhaseId, dayType);
+                  const workout = getTodayWorkout();
                   if (!workout) return;
                   navigation.navigate('EditWorkout', { workoutId: workout.id, workoutName: workout.name });
                 }}
@@ -313,41 +369,45 @@ export default function HomeScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Weekly schedule</Text>
           <Text style={styles.weekCalendarHint}>{weekCalendarLabel(scheduleWeekOffset)}</Text>
-          <View style={styles.weekNavRow}>
-            <TouchableOpacity
-              style={[styles.weekNavBtn, scheduleWeekOffset <= 0 && styles.weekNavBtnDisabled]}
-              disabled={scheduleWeekOffset <= 0}
-              onPress={() => {
-                setScheduleWeekOffset((o) => Math.max(0, o - 1));
-              }}
-            >
-              <Text style={styles.weekNavBtnText}>Previous week</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.weekNavBtn, scheduleWeekOffset >= MAX_SCHEDULE_WEEK_OFFSET && styles.weekNavBtnDisabled]}
-              disabled={scheduleWeekOffset >= MAX_SCHEDULE_WEEK_OFFSET}
-              onPress={() => {
-                setScheduleWeekOffset((o) => Math.min(MAX_SCHEDULE_WEEK_OFFSET, o + 1));
-              }}
-            >
-              <Text style={styles.weekNavBtnText}>Next week</Text>
-            </TouchableOpacity>
-          </View>
+          {activeProgramIsBuiltin ? (
+            <View style={styles.weekNavRow}>
+              <TouchableOpacity
+                style={[styles.weekNavBtn, scheduleWeekOffset <= 0 && styles.weekNavBtnDisabled]}
+                disabled={scheduleWeekOffset <= 0}
+                onPress={() => {
+                  setScheduleWeekOffset((o) => Math.max(0, o - 1));
+                }}
+              >
+                <Text style={styles.weekNavBtnText}>Previous week</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.weekNavBtn, scheduleWeekOffset >= MAX_SCHEDULE_WEEK_OFFSET && styles.weekNavBtnDisabled]}
+                disabled={scheduleWeekOffset >= MAX_SCHEDULE_WEEK_OFFSET}
+                onPress={() => {
+                  setScheduleWeekOffset((o) => Math.min(MAX_SCHEDULE_WEEK_OFFSET, o + 1));
+                }}
+              >
+                <Text style={styles.weekNavBtnText}>Next week</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
           <Text style={styles.weekTapHint}>
-            Tap a day to preview exercises. Next week previews follow your calendar-based program timeline.
+            {activeProgramIsBuiltin
+              ? 'Tap a day to preview exercises. Next week previews follow your calendar-based program timeline.'
+              : 'Tap a day to preview exercises. This 7-day cycle repeats every week.'}
           </Text>
-          {scheduleWeekOffset > 0 ? (
+          {activeProgramIsBuiltin && scheduleWeekOffset > 0 ? (
             <Text style={styles.weekPreviewPhaseHint}>
               Preview: {phases.find((p) => p.id === projectedPhase.phaseId)?.name ?? 'Phase'} · Week{' '}
               {projectedPhase.phaseWeek} of {getWeekCountForPhase(projectedPhase.phaseId)}
             </Text>
           ) : null}
           <View style={styles.weekGrid}>
-            {SCHEDULE.map((type, index) => {
+            {weekCells.map((cell, index) => {
               const isProgramToday = index === scheduleDay % 7 && scheduleWeekOffset === 0;
               const isPast = scheduleWeekOffset === 0 && index < scheduleDay % 7;
               const isSelected = schedulePreviewDayIndex === index;
-              const dayColor = DAY_COLORS[type];
+              const dayColor = cell.color;
               return (
                 <TouchableOpacity
                   key={index}
@@ -367,10 +427,11 @@ export default function HomeScreen() {
                       styles.weekDayLabel,
                       isProgramToday && { color: dayColor },
                       isPast && styles.weekDayPast,
-                      type === 'rest' && styles.weekDayRest,
+                      cell.isRest && styles.weekDayRest,
                     ]}
+                    numberOfLines={1}
                   >
-                    {DAY_LABELS[type]}
+                    {cell.label}
                   </Text>
                   <View
                     style={[
@@ -388,16 +449,16 @@ export default function HomeScreen() {
               );
             })}
           </View>
-          {previewDayType !== null ? (
+          {schedulePreviewDayIndex !== null ? (
             <View style={styles.schedulePreview}>
               <Text style={styles.schedulePreviewTitle}>
-                {DAY_LABELS[previewDayType]}
-                {previewDayType === 'rest' ? ' (no workout)' : ` · ${previewExercises.length} exercises`}
+                {previewTitle}
+                {previewIsRest ? ' (no workout)' : ` · ${previewExercises.length} exercises`}
               </Text>
-              {previewDayType === 'rest' ? (
+              {previewIsRest ? (
                 <Text style={styles.schedulePreviewEmpty}>Scheduled rest.</Text>
               ) : previewExercises.length === 0 ? (
-                <Text style={styles.schedulePreviewEmpty}>No exercises for this day in the current phase.</Text>
+                <Text style={styles.schedulePreviewEmpty}>No exercises added to this workout yet.</Text>
               ) : (
                 previewExercises.map((ex, index) => {
                   const subId = previewSubstitutionMap[ex.id];
@@ -449,6 +510,19 @@ export default function HomeScreen() {
         {/* Settings */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Settings</Text>
+          <TouchableOpacity
+            style={[styles.settingRow, { marginBottom: 8 }]}
+            onPress={() => navigation.navigate('Programs')}
+            activeOpacity={0.7}
+          >
+            <View style={styles.settingRowText}>
+              <Text style={styles.settingLabel}>Workout program</Text>
+              <Text style={styles.settingHint}>
+                {activeProgramName || 'PPL × UL (built-in)'} — tap to switch programs or build your own.
+              </Text>
+            </View>
+            <Text style={styles.settingChevron}>›</Text>
+          </TouchableOpacity>
           <View style={styles.settingRow}>
             <View style={styles.settingRowText}>
               <Text style={styles.settingLabel}>Rest timer</Text>
@@ -465,6 +539,7 @@ export default function HomeScreen() {
               thumbColor={restTimerEnabled ? colors.accent : colors.textTertiary}
             />
           </View>
+          <CloudSyncSettings />
         </View>
 
       </ScrollView>
@@ -477,9 +552,9 @@ export default function HomeScreen() {
             <Text style={styles.scheduleModalHint}>
               Adjust which split day should map to today by shifting your program start date anchor.
             </Text>
-            {SCHEDULE.map((type, i) => {
+            {weekCells.map((cell, i) => {
               const active = (scheduleDay % 7) === i;
-              const c = DAY_COLORS[type];
+              const c = cell.color;
               return (
                 <TouchableOpacity
                   key={i}
@@ -490,7 +565,7 @@ export default function HomeScreen() {
                   }}
                 >
                   <Text style={styles.scheduleDayRowMain}>
-                    Day {i + 1} · {DAY_LABELS[type]}
+                    Day {i + 1} · {cell.fullLabel}
                   </Text>
                   {active ? (
                     <Text style={[styles.scheduleDayRowBadge, { color: c }]}>Current</Text>
@@ -916,4 +991,5 @@ const styles = StyleSheet.create({
   settingRowText: { flex: 1 },
   settingLabel: { color: colors.text, fontSize: 15, fontWeight: '600', marginBottom: 2 },
   settingHint: { color: colors.textTertiary, fontSize: 12, lineHeight: 16 },
+  settingChevron: { color: colors.textTertiary, fontSize: 20 },
 });

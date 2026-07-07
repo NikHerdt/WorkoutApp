@@ -33,6 +33,9 @@ yarn-error.*
 # local env files
 .env*.local
 
+# baked-in cloud sync credentials
+src/config/cloudSync.local.ts
+
 # typescript
 *.tsbuildinfo
 

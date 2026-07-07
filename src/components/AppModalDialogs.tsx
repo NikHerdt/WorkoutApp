@@ -1,5 +1,5 @@
-import React from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { colors } from '../theme/colors';
 
 type AppNoticeModalProps = {
@@ -90,6 +90,72 @@ export function AppConfirmModal({
   );
 }
 
+type AppInputModalProps = {
+  visible: boolean;
+  title: string;
+  message?: string;
+  placeholder?: string;
+  initialValue?: string;
+  submitText?: string;
+  onCancel: () => void;
+  onSubmit: (value: string) => void;
+};
+
+export function AppInputModal({
+  visible,
+  title,
+  message,
+  placeholder,
+  initialValue = '',
+  submitText = 'Save',
+  onCancel,
+  onSubmit,
+}: AppInputModalProps) {
+  const [value, setValue] = useState(initialValue);
+
+  useEffect(() => {
+    if (visible) setValue(initialValue);
+  }, [visible, initialValue]);
+
+  const trimmed = value.trim();
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onCancel}>
+      <View style={styles.overlay}>
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onCancel} />
+        <View style={styles.card}>
+          <Text style={styles.title}>{title}</Text>
+          {message ? <Text style={styles.message}>{message}</Text> : null}
+          <TextInput
+            style={styles.input}
+            value={value}
+            onChangeText={setValue}
+            placeholder={placeholder}
+            placeholderTextColor={colors.placeholder}
+            autoFocus
+            returnKeyType="done"
+            onSubmitEditing={() => {
+              if (trimmed) onSubmit(trimmed);
+            }}
+          />
+          <View style={styles.actions}>
+            <TouchableOpacity style={styles.cancelButton} onPress={onCancel}>
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.confirmButton, styles.confirmButtonPrimary, !trimmed && styles.confirmButtonDisabled]}
+              disabled={!trimmed}
+              onPress={() => onSubmit(trimmed)}
+            >
+              <Text style={[styles.confirmButtonText, styles.confirmButtonTextOnAccent]}>{submitText}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
@@ -140,6 +206,18 @@ const styles = StyleSheet.create({
   },
   confirmButtonDanger: { backgroundColor: colors.danger },
   confirmButtonPrimary: { backgroundColor: colors.accent },
+  confirmButtonDisabled: { opacity: 0.4 },
+  input: {
+    marginTop: 12,
+    backgroundColor: colors.inputBg,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    color: colors.text,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+  },
   confirmButtonText: { fontWeight: '700' },
   confirmButtonTextOnDark: { color: '#fff' },
   confirmButtonTextOnAccent: { color: '#000' },
