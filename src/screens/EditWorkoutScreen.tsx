@@ -42,15 +42,37 @@ export default function EditWorkoutScreen() {
   const route = useRoute<Route>();
   const { workoutId } = route.params;
   const pendingSubstitutions = useWorkoutStore((s) => s.pendingSubstitutions);
-  const [exercises, setExercises] = useState<ExerciseRow[]>([]);
+  const [exercises, setExercises] = useState<DisplayExerciseRow[]>([]);
   const [showAddExerciseModal, setShowAddExerciseModal] = useState(false);
   const [exerciseToRemove, setExerciseToRemove] = useState<{ id: number; name: string } | null>(null);
 
+  /**
+   * Rows for this workout, with set counts and labels resolved to the effective
+   * (substituted) exercise — the same one the Home preview and the active
+   * workout use. Editing the counts writes to the substitution and keeps the
+   * template slot in sync, so all three views agree.
+   */
+  const buildDisplayRows = useCallback((): DisplayExerciseRow[] => {
+    const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
+    return rows.map((ex) => {
+      const selectedId = pendingSubstitutions[ex.id] ?? ex.id;
+      const selected =
+        selectedId === ex.id ? ex : (getExerciseById(selectedId) as ExerciseRow | null);
+      return {
+        ...ex,
+        warmup_sets: selected?.warmup_sets ?? ex.warmup_sets,
+        working_sets: selected?.working_sets ?? ex.working_sets,
+        displayId: selected?.id ?? ex.id,
+        displayName: selected?.name ?? ex.name,
+        displayMuscleGroup: selected?.muscle_group ?? ex.muscle_group,
+      };
+    });
+  }, [workoutId, pendingSubstitutions]);
+
   useFocusEffect(
     useCallback(() => {
-      const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
-      setExercises(rows);
-    }, [workoutId])
+      setExercises(buildDisplayRows());
+    }, [buildDisplayRows])
   );
 
   function adjustSets(
@@ -66,10 +88,10 @@ export default function EditWorkoutScreen() {
           ...ex,
           [field]: Math.max(field === 'working_sets' ? 1 : 0, ex[field] + delta),
         };
-        // Keep slot defaults in sync, and also update the currently selected substitution if one is active.
-        updateExerciseSetCounts(updated.id, updated.warmup_sets, updated.working_sets);
+        // Write the effective (selected) exercise, and keep the template slot in sync.
+        updateExerciseSetCounts(selectedExerciseId, updated.warmup_sets, updated.working_sets);
         if (selectedExerciseId !== updated.id) {
-          updateExerciseSetCounts(selectedExerciseId, updated.warmup_sets, updated.working_sets);
+          updateExerciseSetCounts(updated.id, updated.warmup_sets, updated.working_sets);
         }
         return updated;
       });
@@ -103,17 +125,6 @@ export default function EditWorkoutScreen() {
     setExerciseToRemove({ id: exerciseId, name });
   }
 
-  const displayExercises: DisplayExerciseRow[] = exercises.map((ex) => {
-    const selectedId = pendingSubstitutions[ex.id] ?? ex.id;
-    const selected = selectedId === ex.id ? ex : getExerciseById(selectedId);
-    return {
-      ...ex,
-      displayId: selected?.id ?? ex.id,
-      displayName: selected?.name ?? ex.name,
-      displayMuscleGroup: selected?.muscle_group ?? ex.muscle_group,
-    };
-  });
-
   return (
     <>
       {exercises.length === 0 ? (
@@ -133,7 +144,7 @@ export default function EditWorkoutScreen() {
             <Text style={styles.addButtonText}>+ Add exercise</Text>
           </TouchableOpacity>
 
-          {displayExercises.map((ex, index) => (
+          {exercises.map((ex, index) => (
             <View key={ex.id} style={styles.card}>
               {/* Order arrows */}
               <View style={styles.orderCol}>
@@ -224,8 +235,7 @@ export default function EditWorkoutScreen() {
         onClose={() => setShowAddExerciseModal(false)}
         onSelect={(exerciseId) => {
           addExerciseToWorkoutFromSource(workoutId, exerciseId);
-          const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
-          setExercises(rows);
+          setExercises(buildDisplayRows());
         }}
       />
       <AppConfirmModal
@@ -239,8 +249,7 @@ export default function EditWorkoutScreen() {
         onConfirm={() => {
           if (!exerciseToRemove) return;
           removeExerciseFromWorkout(exerciseToRemove.id);
-          const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
-          setExercises(rows);
+          setExercises(buildDisplayRows());
           setExerciseToRemove(null);
         }}
       />

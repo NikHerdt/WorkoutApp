@@ -787,7 +787,8 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   removeExerciseFromSession: (exerciseIndex) => {
-    get().stopRestTimer();
+    // The rest timer is global (not tied to an exercise), so keep it running
+    // when an exercise is removed mid-session.
     set((state) => {
       const exercises = [...state.activeExercises];
       exercises.splice(exerciseIndex, 1);
