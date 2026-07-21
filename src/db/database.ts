@@ -110,6 +110,7 @@ export function initDatabase(): void {
   migrateAddWorkoutDate(database);
   migrateAddExerciseOrder(database);
   migrateAddCustomPhaseFlag(database);
+  migrateAddMachineBrand(database);
   ensureBuiltinProgram(database);
 
   const seeded = database.getFirstSync<{ value: string }>(
@@ -245,6 +246,20 @@ function migrateAddCustomPhaseFlag(database: SQLite.SQLiteDatabase): void {
   database.execSync('PRAGMA user_version = 5');
 }
 
+/** One-time: per-set machine brand, so weights can be siloed per manufacturer (user_version < 6). */
+function migrateAddMachineBrand(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  const v = verRow?.user_version ?? 0;
+  if (v >= 6) return;
+
+  const cols = database.getAllSync<{ name: string }>('PRAGMA table_info(set_logs)');
+  if (!cols.some((c) => c.name === 'machine_brand')) {
+    database.execSync('ALTER TABLE set_logs ADD COLUMN machine_brand TEXT');
+  }
+
+  database.execSync('PRAGMA user_version = 6');
+}
+
 /** Idempotent: the preprogrammed PPL×UL plan is represented as a builtin program row. */
 function ensureBuiltinProgram(database: SQLite.SQLiteDatabase): void {
   const existing = database.getFirstSync<{ id: number }>(
@@ -323,15 +338,178 @@ export function setSetting(key: string, value: string): void {
 
 const EXERCISE_WARMUP_PRESETS_KEY = 'exercise_warmup_presets';
 
+// --- Machine brand tracking ---------------------------------------------------
+const MACHINE_BRANDS_KEY = 'machine_brands';
+const MACHINE_BRAND_TRACKING_OVERRIDES_KEY = 'machine_brand_tracking_overrides';
+const EXERCISE_SELECTED_BRAND_KEY = 'exercise_selected_brand';
+
+/** Name fragments that strongly imply a weight-stack / plate-loaded machine or cable. */
+const MACHINE_NAME_KEYWORDS = [
+  'machine',
+  'cable',
+  'pulldown',
+  'pull-down',
+  'pull down',
+  'lat pull',
+  'pushdown',
+  'push-down',
+  'pressdown',
+  'pec deck',
+  'pec-deck',
+  'leg press',
+  'leg extension',
+  'leg curl',
+  'hack squat',
+  'smith',
+  'crossover',
+  'seated row',
+  'cable row',
+  'assisted',
+];
+
+/** Heuristic: does this exercise name look like a machine/cable movement? */
+export function isMachineExerciseByName(name: string): boolean {
+  const n = String(name ?? '').toLowerCase();
+  return MACHINE_NAME_KEYWORDS.some((kw) => n.includes(kw));
+}
+
+function readNumberBoolMap(key: string): Record<string, number> {
+  const raw = getSetting(key);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const n = Number(v);
+      if (Number.isFinite(n)) out[k] = n ? 1 : 0;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Whether an exercise should show the machine-brand selector. Uses an explicit
+ * per-exercise override when the user has set one, otherwise falls back to
+ * name-based auto-detection.
+ */
+export function getExerciseTracksBrand(exerciseId: number, exerciseName?: string): boolean {
+  const overrides = readNumberBoolMap(MACHINE_BRAND_TRACKING_OVERRIDES_KEY);
+  const override = overrides[String(exerciseId)];
+  if (override === 0 || override === 1) return override === 1;
+  const name = exerciseName ?? getExerciseById(exerciseId)?.name ?? '';
+  return isMachineExerciseByName(name);
+}
+
+/** Persist an explicit on/off override for brand tracking on one exercise. */
+export function setExerciseTracksBrand(exerciseId: number, tracks: boolean): void {
+  const overrides = readNumberBoolMap(MACHINE_BRAND_TRACKING_OVERRIDES_KEY);
+  overrides[String(exerciseId)] = tracks ? 1 : 0;
+  setSetting(MACHINE_BRAND_TRACKING_OVERRIDES_KEY, JSON.stringify(overrides));
+}
+
+/** All known machine brands: the user's saved list unioned with any used in set logs. */
+export function getMachineBrands(): string[] {
+  let stored: string[] = [];
+  const raw = getSetting(MACHINE_BRANDS_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) stored = parsed.map((b) => String(b));
+    } catch {
+      /* ignore */
+    }
+  }
+  const used = getDb()
+    .getAllSync<{ machine_brand: string }>(
+      "SELECT DISTINCT machine_brand FROM set_logs WHERE machine_brand IS NOT NULL AND machine_brand != ''"
+    )
+    .map((r) => r.machine_brand);
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const b of [...stored, ...used]) {
+    const trimmed = b.trim();
+    const lower = trimmed.toLowerCase();
+    if (!trimmed || seen.has(lower)) continue;
+    seen.add(lower);
+    out.push(trimmed);
+  }
+  out.sort((a, b) => a.localeCompare(b));
+  return out;
+}
+
+/** Add a brand to the saved list (case-insensitive de-dupe). */
+export function addMachineBrand(brand: string): void {
+  const trimmed = brand.trim();
+  if (!trimmed) return;
+  let stored: string[] = [];
+  const raw = getSetting(MACHINE_BRANDS_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) stored = parsed.map((b) => String(b));
+    } catch {
+      /* ignore */
+    }
+  }
+  if (stored.some((b) => b.trim().toLowerCase() === trimmed.toLowerCase())) return;
+  stored.push(trimmed);
+  setSetting(MACHINE_BRANDS_KEY, JSON.stringify(stored));
+}
+
+/** Last brand selected for an exercise (used to default the next session's silo). */
+export function getExerciseSelectedBrand(exerciseId: number): string | null {
+  const raw = getSetting(EXERCISE_SELECTED_BRAND_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    const v = parsed[String(exerciseId)];
+    return typeof v === 'string' && v.trim() !== '' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setExerciseSelectedBrand(exerciseId: number, brand: string | null): void {
+  const raw = getSetting(EXERCISE_SELECTED_BRAND_KEY);
+  let store: Record<string, string> = {};
+  if (raw) {
+    try {
+      store = JSON.parse(raw) as Record<string, string>;
+    } catch {
+      store = {};
+    }
+  }
+  if (brand == null || brand.trim() === '') {
+    delete store[String(exerciseId)];
+  } else {
+    store[String(exerciseId)] = brand.trim();
+  }
+  setSetting(EXERCISE_SELECTED_BRAND_KEY, JSON.stringify(store));
+}
+// -----------------------------------------------------------------------------
+
 export type WarmupPreset = { weight: string; reps: string };
 
-/** Saved warmup weights/reps per exercise (from last edit or finished workout). */
-export function getSavedWarmupPresets(exerciseId: number): WarmupPreset[] | null {
+/**
+ * Warmup preset storage key. Brand-tracked exercises silo presets per brand;
+ * a null/empty brand (untracked, or the "No brand" silo) uses the plain
+ * exercise-id key so legacy presets keep working.
+ */
+function warmupPresetKey(exerciseId: number, brand?: string | null): string {
+  const b = String(brand ?? '').trim();
+  return b === '' ? String(exerciseId) : `${exerciseId}|${b}`;
+}
+
+/** Saved warmup weights/reps per exercise (from last edit or finished workout), optionally per brand. */
+export function getSavedWarmupPresets(exerciseId: number, brand?: string | null): WarmupPreset[] | null {
   const raw = getSetting(EXERCISE_WARMUP_PRESETS_KEY);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Record<string, WarmupPreset[]>;
-    const entry = parsed[String(exerciseId)];
+    const entry = parsed[warmupPresetKey(exerciseId, brand)];
     if (!Array.isArray(entry)) return null;
     return entry.map((p) => ({
       weight: String(p?.weight ?? ''),
@@ -342,7 +520,11 @@ export function getSavedWarmupPresets(exerciseId: number): WarmupPreset[] | null
   }
 }
 
-export function saveWarmupPresets(exerciseId: number, presets: WarmupPreset[]): void {
+export function saveWarmupPresets(
+  exerciseId: number,
+  presets: WarmupPreset[],
+  brand?: string | null
+): void {
   const raw = getSetting(EXERCISE_WARMUP_PRESETS_KEY);
   let store: Record<string, WarmupPreset[]> = {};
   if (raw) {
@@ -352,19 +534,19 @@ export function saveWarmupPresets(exerciseId: number, presets: WarmupPreset[]): 
       store = {};
     }
   }
-  store[String(exerciseId)] = presets.map((p) => ({
+  store[warmupPresetKey(exerciseId, brand)] = presets.map((p) => ({
     weight: String(p.weight ?? ''),
     reps: String(p.reps ?? ''),
   }));
   setSetting(EXERCISE_WARMUP_PRESETS_KEY, JSON.stringify(store));
 }
 
-export function clearSavedWarmupPresets(exerciseId: number): void {
+export function clearSavedWarmupPresets(exerciseId: number, brand?: string | null): void {
   const raw = getSetting(EXERCISE_WARMUP_PRESETS_KEY);
   if (!raw) return;
   try {
     const store = JSON.parse(raw) as Record<string, WarmupPreset[]>;
-    delete store[String(exerciseId)];
+    delete store[warmupPresetKey(exerciseId, brand)];
     setSetting(EXERCISE_WARMUP_PRESETS_KEY, JSON.stringify(store));
   } catch {
     /* ignore */
@@ -911,11 +1093,12 @@ export function logSet(
   setType: string,
   weight: number,
   reps: number,
-  rpe?: number
+  rpe?: number,
+  machineBrand?: string | null
 ): void {
   getDb().runSync(
-    `INSERT INTO set_logs (session_id, exercise_id, exercise_order, set_number, set_type, weight, reps, rpe, completed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO set_logs (session_id, exercise_id, exercise_order, set_number, set_type, weight, reps, rpe, machine_brand, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       sessionId,
       exerciseId,
@@ -925,6 +1108,7 @@ export function logSet(
       weight,
       reps,
       rpe ?? null,
+      machineBrand && machineBrand.trim() !== '' ? machineBrand.trim() : null,
       new Date().toISOString(),
     ]
   );
@@ -942,26 +1126,78 @@ export function getPreviousSetsForExercise(exerciseId: number, limit = 10) {
   );
 }
 
-export function getLastSessionSetsForExercise(exerciseId: number) {
+/**
+ * Sets from the most recent completed session for an exercise.
+ * When `brand` is provided the lookup is siloed to that machine brand
+ * (pass null for the "No brand" / legacy silo; omit the argument to ignore
+ * brand entirely).
+ */
+export function getLastSessionSetsForExercise(exerciseId: number, brand?: string | null) {
+  const byBrand = brand !== undefined;
+  const brandClause = !byBrand
+    ? ''
+    : brand === null || brand === ''
+      ? ' AND sl.machine_brand IS NULL'
+      : ' AND sl.machine_brand = ?';
+  const brandParams = byBrand && brand !== null && brand !== '' ? [brand] : [];
+
   const lastSession = getDb().getFirstSync<{ session_id: number }>(
     `SELECT sl.session_id
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
-     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL
+     WHERE sl.exercise_id = ?${brandClause} AND ws.completed_at IS NOT NULL
      ORDER BY ws.completed_at DESC
      LIMIT 1`,
-    [exerciseId]
+    [exerciseId, ...brandParams]
   );
   if (!lastSession) return [];
 
+  const rowBrandClause = !byBrand
+    ? ''
+    : brand === null || brand === ''
+      ? ' AND machine_brand IS NULL'
+      : ' AND machine_brand = ?';
   return getDb().getAllSync<any>(
-    `SELECT * FROM set_logs WHERE session_id = ? AND exercise_id = ? ORDER BY set_number`,
-    [lastSession.session_id, exerciseId]
+    `SELECT * FROM set_logs WHERE session_id = ? AND exercise_id = ?${rowBrandClause} ORDER BY set_number`,
+    [lastSession.session_id, exerciseId, ...brandParams]
   );
 }
 
 // Analytics
-export function getExerciseVolumeHistory(exerciseId: number) {
+
+/**
+ * SQL fragment + params to constrain set_logs (alias `sl`) to one machine brand.
+ * `undefined` = no filter (aggregate); `null`/'' = the "No brand" silo; string = that brand.
+ * Machine-tracked exercises use this so different machines' weights don't get
+ * mixed into a single progression/PR.
+ */
+function brandFilterSql(brand: string | null | undefined): { clause: string; params: any[] } {
+  if (brand === undefined) return { clause: '', params: [] };
+  if (brand === null || brand === '') return { clause: " AND sl.machine_brand IS NULL", params: [] };
+  return { clause: ' AND sl.machine_brand = ?', params: [brand] };
+}
+
+/** Distinct machine brands with logged data for an exercise, plus whether any un-branded sets exist. */
+export function getExerciseLoggedBrands(exerciseId: number): { brands: string[]; hasNoBrand: boolean } {
+  const rows = getDb().getAllSync<{ machine_brand: string | null }>(
+    `SELECT DISTINCT sl.machine_brand
+     FROM set_logs sl
+     JOIN workout_sessions ws ON sl.session_id = ws.id
+     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL`,
+    [exerciseId]
+  );
+  const brands: string[] = [];
+  let hasNoBrand = false;
+  for (const r of rows) {
+    if (r.machine_brand == null || r.machine_brand === '') hasNoBrand = true;
+    else brands.push(r.machine_brand);
+  }
+  brands.sort((a, b) => a.localeCompare(b));
+  return { brands, hasNoBrand };
+}
+
+export function getExerciseVolumeHistory(exerciseId: number, brand?: string | null) {
+  const b = brandFilterSql(brand);
   return getDb().getAllSync<{ date: string; total_volume: number; max_weight: number; total_reps: number }>(
     `SELECT
        date(datetime(ws.completed_at, 'localtime')) as date,
@@ -970,15 +1206,16 @@ export function getExerciseVolumeHistory(exerciseId: number) {
        SUM(sl.reps) as total_reps
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
-     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'
+     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'${b.clause}
      GROUP BY date(datetime(ws.completed_at, 'localtime'))
      ORDER BY date ASC
      LIMIT 30`,
-    [exerciseId]
+    [exerciseId, ...b.params]
   );
 }
 
-export function getExerciseWeightHistory(exerciseId: number) {
+export function getExerciseWeightHistory(exerciseId: number, brand?: string | null) {
+  const b = brandFilterSql(brand);
   return getDb().getAllSync<{ date: string; max_weight: number; avg_weight: number }>(
     `SELECT
        date(datetime(ws.completed_at, 'localtime')) as date,
@@ -986,24 +1223,60 @@ export function getExerciseWeightHistory(exerciseId: number) {
        AVG(sl.weight) as avg_weight
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
-     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'
+     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'${b.clause}
      GROUP BY date(datetime(ws.completed_at, 'localtime'))
      ORDER BY date ASC
      LIMIT 30`,
-    [exerciseId]
+    [exerciseId, ...b.params]
   );
 }
 
-export function getExercisePR(exerciseId: number) {
+export function getExercisePR(exerciseId: number, brand?: string | null) {
+  const b = brandFilterSql(brand);
   return getDb().getFirstSync<{ max_weight: number; reps: number; date: string }>(
     `SELECT sl.weight as max_weight, sl.reps, date(datetime(ws.completed_at, 'localtime')) as date
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
-     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'
+     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'${b.clause}
      ORDER BY sl.weight DESC, sl.reps DESC
      LIMIT 1`,
+    [exerciseId, ...b.params]
+  );
+}
+
+/**
+ * Whole-history totals for an exercise across every machine brand. These are the
+ * brand-agnostic metrics (session count, reps, volume, best estimated 1RM) that
+ * stay meaningful even though raw weights differ between machines.
+ */
+export function getExerciseAggregateStats(exerciseId: number): {
+  sessions: number;
+  total_reps: number;
+  total_volume: number;
+  best_e1rm: number;
+} {
+  const row = getDb().getFirstSync<{
+    sessions: number | null;
+    total_reps: number | null;
+    total_volume: number | null;
+    best_e1rm: number | null;
+  }>(
+    `SELECT
+       COUNT(DISTINCT ws.id) as sessions,
+       SUM(sl.reps) as total_reps,
+       SUM(CASE WHEN sl.weight > 0 THEN sl.weight * sl.reps ELSE sl.reps END) as total_volume,
+       MAX(ROUND(sl.weight * (1.0 + sl.reps / 30.0), 1)) as best_e1rm
+     FROM set_logs sl
+     JOIN workout_sessions ws ON sl.session_id = ws.id
+     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working' AND sl.reps > 0`,
     [exerciseId]
   );
+  return {
+    sessions: row?.sessions ?? 0,
+    total_reps: row?.total_reps ?? 0,
+    total_volume: Math.round(row?.total_volume ?? 0),
+    best_e1rm: row?.best_e1rm ?? 0,
+  };
 }
 
 export function getLifetimeStats() {
@@ -1188,7 +1461,8 @@ export function getTop1RMs(limit = 15) {
   );
 }
 
-export function getEstimated1RMHistory(exerciseId: number) {
+export function getEstimated1RMHistory(exerciseId: number, brand?: string | null) {
+  const b = brandFilterSql(brand);
   const db = getDb();
   return db.getAllSync<{ date: string; estimated_1rm: number; weight: number; reps: number }>(
     `SELECT
@@ -1199,11 +1473,11 @@ export function getEstimated1RMHistory(exerciseId: number) {
      FROM set_logs sl
      JOIN workout_sessions ws ON sl.session_id = ws.id
      WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL AND sl.set_type = 'working'
-       AND sl.reps > 0 AND sl.weight > 0
+       AND sl.reps > 0 AND sl.weight > 0${b.clause}
      GROUP BY date(datetime(ws.completed_at, 'localtime'))
      ORDER BY date ASC
      LIMIT 30`,
-    [exerciseId]
+    [exerciseId, ...b.params]
   );
 }
 

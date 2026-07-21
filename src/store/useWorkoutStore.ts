@@ -20,6 +20,10 @@ import {
   getProgramDays,
   setActiveProgramId,
   getWorkoutById,
+  getExerciseTracksBrand,
+  getExerciseSelectedBrand,
+  setExerciseSelectedBrand,
+  addMachineBrand,
   ProgramDayRow,
 } from '../db/database';
 import { backupToCloudSilently } from '../services/cloudBackup';
@@ -177,13 +181,17 @@ function getCompletedWeeksBeforePhase(phaseId: number): number {
   return getWeekCountForPhase(1) + getWeekCountForPhase(2);
 }
 
-function persistWarmupPresetsForExercise(exerciseId: number, sets: ActiveSet[]): void {
+function persistWarmupPresetsForExercise(
+  exerciseId: number,
+  sets: ActiveSet[],
+  brand?: string | null
+): void {
   const presets = extractWarmupPresetsFromSets(sets);
   if (presets.length === 0) return;
   if (presets.some((p) => String(p.weight ?? '').trim() !== '')) {
-    saveWarmupPresets(exerciseId, presets);
+    saveWarmupPresets(exerciseId, presets, brand);
   } else {
-    clearSavedWarmupPresets(exerciseId);
+    clearSavedWarmupPresets(exerciseId, brand);
   }
 }
 
@@ -203,13 +211,23 @@ function renumberSets(sets: ActiveSet[]): ActiveSet[] {
 
 function buildActiveExerciseState(
   exerciseId: number,
-  slotTemplateExerciseId?: number
+  slotTemplateExerciseId?: number,
+  brandOverride?: string | null
 ): ActiveExerciseState | null {
   const ex = getExerciseById(exerciseId);
   if (!ex) return null;
 
+  const tracksBrand = getExerciseTracksBrand(ex.id, ex.name);
+  const machineBrand = tracksBrand
+    ? brandOverride !== undefined
+      ? brandOverride
+      : getExerciseSelectedBrand(ex.id)
+    : null;
+  // Silo history/presets by brand only when tracking is on; otherwise ignore brand.
+  const brandFilter = tracksBrand ? machineBrand : undefined;
+
   const isTimed = String(ex.target_reps ?? '').includes('HOLD');
-  const prevSets = getLastSessionSetsForExercise(ex.id);
+  const prevSets = getLastSessionSetsForExercise(ex.id, brandFilter);
   const prevWorking = prevSets.filter((s: any) => s.set_type === 'working');
   const prevWarmup = prevSets.filter((s: any) => s.set_type === 'warmup');
   const firstWorkingHist = prevWorking[0];
@@ -219,7 +237,7 @@ function buildActiveExerciseState(
   const workingRepsForWarmups =
     lastReps > 0 ? lastReps : parseWorkingRepsFromTarget(ex.target_reps ?? '');
   const warmupPresets = resolveInitialWarmupPresets(
-    getSavedWarmupPresets(ex.id),
+    getSavedWarmupPresets(ex.id, brandFilter),
     prevWarmup,
     lastWeight,
     workingRepsForWarmups,
@@ -270,6 +288,8 @@ function buildActiveExerciseState(
     sets,
     isTimed,
     slotTemplateExerciseId: slotTemplateExerciseId ?? exerciseId,
+    tracksBrand,
+    machineBrand,
   };
 }
 
@@ -336,6 +356,8 @@ interface WorkoutState {
   removeSet: (exerciseIndex: number, setIndex: number) => void;
   setPendingSubstitution: (templateExerciseId: number, replacementExerciseId: number | null) => void;
   replaceActiveExercise: (exerciseIndex: number, replacementExerciseId: number) => void;
+  /** Change the machine brand for an active exercise, re-filling its sets from that brand's history. */
+  setMachineBrand: (exerciseIndex: number, brand: string | null) => void;
   /** Appends an exercise to the active session by exercise id. */
   addExerciseToSession: (exerciseId: number) => void;
   /** Removes an exercise from the active session by index. Stops the rest timer. */
@@ -519,6 +541,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
 
     // Log all completed sets in session exercise order
     activeExercises.forEach((exercise, exerciseOrder) => {
+      const brand = exercise.tracksBrand ? exercise.machineBrand : null;
       for (const setItem of exercise.sets) {
         if (setItem.completed) {
           logSet(
@@ -528,7 +551,9 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
             setItem.setNumber,
             setItem.setType,
             parseFloat(setItem.weight) || 0,
-            parseInt(setItem.reps) || 0
+            parseInt(setItem.reps) || 0,
+            undefined,
+            brand
           );
         }
       }
@@ -537,7 +562,11 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     completeSession(activeSessionId);
 
     for (const exercise of activeExercises) {
-      persistWarmupPresetsForExercise(exercise.exerciseId, exercise.sets);
+      persistWarmupPresetsForExercise(
+        exercise.exerciseId,
+        exercise.sets,
+        exercise.tracksBrand ? exercise.machineBrand : undefined
+      );
     }
 
     let programStartDate = get().programStartDate;
@@ -655,7 +684,11 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     if (updated) {
       const changedSet = updated.sets[setIndex];
       if (changedSet?.setType === 'warmup' && (field === 'weight' || field === 'reps')) {
-        persistWarmupPresetsForExercise(updated.exerciseId, updated.sets);
+        persistWarmupPresetsForExercise(
+          updated.exerciseId,
+          updated.sets,
+          updated.tracksBrand ? updated.machineBrand : undefined
+        );
       }
     }
     persistActiveWorkoutState(get());
@@ -811,6 +844,43 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       const prev = exercises[exerciseIndex];
       const slotId = prev.slotTemplateExerciseId ?? prev.exerciseId;
       exercises[exerciseIndex] = { ...built, slotTemplateExerciseId: slotId };
+      return { activeExercises: exercises };
+    });
+    persistActiveWorkoutState(get());
+  },
+
+  setMachineBrand: (exerciseIndex, brand) => {
+    const current = get().activeExercises[exerciseIndex];
+    if (!current || !current.tracksBrand) return;
+    const normalized = brand && brand.trim() !== '' ? brand.trim() : null;
+    if (normalized === current.machineBrand) return;
+
+    // Remember this brand as the exercise default and add it to the global list.
+    setExerciseSelectedBrand(current.exerciseId, normalized);
+    if (normalized) addMachineBrand(normalized);
+
+    // Re-fill from the selected brand's history. Sets already logged this
+    // session are kept; only not-yet-completed sets adopt the new prefill.
+    const rebuilt = buildActiveExerciseState(
+      current.exerciseId,
+      current.slotTemplateExerciseId,
+      normalized
+    );
+    if (!rebuilt) return;
+    set((state) => {
+      const exercises = [...state.activeExercises];
+      const mergedSets = current.sets.map((s, i) => {
+        if (s.completed) return s;
+        const fresh = rebuilt.sets[i];
+        if (!fresh || fresh.setType !== s.setType) return s;
+        return {
+          ...s,
+          weight: fresh.weight,
+          reps: fresh.reps,
+          propagationVersion: (s.propagationVersion ?? 0) + 1,
+        };
+      });
+      exercises[exerciseIndex] = { ...current, machineBrand: normalized, sets: mergedSets };
       return { activeExercises: exercises };
     });
     persistActiveWorkoutState(get());

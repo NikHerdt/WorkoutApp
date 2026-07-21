@@ -76,6 +76,10 @@ export interface ActiveExerciseState {
   slotTemplateExerciseId: number;
   /** True when the exercise target_reps contains 'HOLD' (timed holds rather than rep-counted sets). */
   isTimed: boolean;
+  /** True for machine/cable exercises that silo weights per manufacturer. */
+  tracksBrand: boolean;
+  /** Selected machine brand for this exercise's weight silo (null = "No brand"). */
+  machineBrand: string | null;
 }
 
 export interface PreviousSetInfo {

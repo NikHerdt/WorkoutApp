@@ -14,11 +14,12 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors } from '../theme/colors';
 import { useWorkoutStore } from '../store/useWorkoutStore';
 import { HomeStackParamList } from '../navigation/AppNavigator';
-import { getExerciseById, getExercisesByWorkout, getLastSessionSetsForExercise, upsertBodyWeightForDate, getBodyWeightForDate } from '../db/database';
+import { getExerciseById, getExercisesByWorkout, getLastSessionSetsForExercise, upsertBodyWeightForDate, getBodyWeightForDate, getMachineBrands } from '../db/database';
 import SetRow from '../components/SetRow';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import BodyWeightLogModal from '../components/BodyWeightLogModal';
 import ActionSheet, { ActionSheetAction } from '../components/ActionSheet';
+import { AppInputModal } from '../components/AppModalDialogs';
 import { toLocalDateYmd } from '../utils/dateLocal';
 import { WEIGHT_UNIT_HEADER } from '../constants/weightUnits';
 
@@ -42,6 +43,7 @@ export default function WorkoutScreen() {
     addExerciseToSession,
     removeExerciseFromSession,
     replaceActiveExercise,
+    setMachineBrand,
   } = useWorkoutStore();
 
   const [previousSetsMap, setPreviousSetsMap] = useState<Record<number, any[]>>({});
@@ -49,6 +51,7 @@ export default function WorkoutScreen() {
   const [exerciseDetails, setExerciseDetails] = useState<Record<number, any>>({});
   const [substituteModalForIndex, setSubstituteModalForIndex] = useState<number | null>(null);
   const [addExerciseModal, setAddExerciseModal] = useState(false);
+  const [addBrandForIndex, setAddBrandForIndex] = useState<number | null>(null);
   const [bodyWeightModal, setBodyWeightModal] = useState(false);
   const [actionSheet, setActionSheet] = useState<{
     title?: string;
@@ -71,7 +74,10 @@ export default function WorkoutScreen() {
     for (const ae of activeExercises) {
       const row = getExerciseById(ae.exerciseId);
       if (row) nextDetail[ae.exerciseId] = row;
-      nextPrev[ae.exerciseId] = getLastSessionSetsForExercise(ae.exerciseId);
+      nextPrev[ae.exerciseId] = getLastSessionSetsForExercise(
+        ae.exerciseId,
+        ae.tracksBrand ? ae.machineBrand : undefined
+      );
     }
     setExerciseDetails(nextDetail);
     setPreviousSetsMap(nextPrev);
@@ -129,6 +135,25 @@ export default function WorkoutScreen() {
     const sets = activeExercises[exerciseIndex].sets;
     const warmupCount = sets.filter((s) => s.setType === 'warmup').length;
     return setIndex - warmupCount + 1;
+  }
+
+  function openBrandPicker(exerciseIndex: number) {
+    const ex = activeExercises[exerciseIndex];
+    if (!ex) return;
+    const brands = getMachineBrands();
+    const actions: ActionSheetAction[] = [
+      ...brands.map((b) => ({
+        label: ex.machineBrand === b ? `${b}  ✓` : b,
+        onPress: () => setMachineBrand(exerciseIndex, b),
+      })),
+      {
+        label: ex.machineBrand === null ? 'No brand  ✓' : 'No brand',
+        onPress: () => setMachineBrand(exerciseIndex, null),
+      },
+      { label: 'Add new brand…', onPress: () => setAddBrandForIndex(exerciseIndex) },
+      { label: 'Cancel', style: 'cancel' },
+    ];
+    setActionSheet({ title: 'Machine brand', message: ex.exerciseName, actions });
   }
 
   function handleRemoveExercise(exerciseIndex: number) {
@@ -254,6 +279,23 @@ export default function WorkoutScreen() {
               {detail?.notes ? (
                 <View style={styles.notesRow}>
                   <Text style={styles.notesText} numberOfLines={2}>{detail.notes}</Text>
+                </View>
+              ) : null}
+
+              {/* Machine brand selector */}
+              {exercise.tracksBrand ? (
+                <View style={styles.brandRow}>
+                  <Text style={styles.brandLabel}>Machine</Text>
+                  <TouchableOpacity
+                    style={styles.brandChip}
+                    onPress={() => openBrandPicker(exerciseIndex)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.brandChipText}>
+                      {exercise.machineBrand ?? 'Select brand'}
+                    </Text>
+                    <Text style={styles.brandChipChevron}>▾</Text>
+                  </TouchableOpacity>
                 </View>
               ) : null}
 
@@ -389,6 +431,20 @@ export default function WorkoutScreen() {
         onClose={() => setActionSheet(null)}
       />
 
+      <AppInputModal
+        visible={addBrandForIndex !== null}
+        title="Add machine brand"
+        message="Name the manufacturer (e.g. Life Fitness, Hammer Strength). Weights are tracked separately per brand."
+        placeholder="Brand name"
+        submitText="Add"
+        onCancel={() => setAddBrandForIndex(null)}
+        onSubmit={(name) => {
+          const idx = addBrandForIndex;
+          setAddBrandForIndex(null);
+          if (idx !== null) setMachineBrand(idx, name);
+        }}
+      />
+
       <BodyWeightLogModal
         visible={bodyWeightModal}
         title="Body weight (optional)"
@@ -521,6 +577,35 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontStyle: 'italic',
   },
+
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    marginLeft: 38,
+    gap: 10,
+  },
+  brandLabel: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  brandChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  brandChipText: { color: colors.accent, fontSize: 12, fontWeight: '600' },
+  brandChipChevron: { color: colors.textTertiary, fontSize: 10 },
 
   columnHeaders: {
     flexDirection: 'row',

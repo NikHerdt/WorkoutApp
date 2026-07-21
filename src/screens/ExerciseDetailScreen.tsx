@@ -6,6 +6,7 @@ import {
   StyleSheet,
   Dimensions,
   TouchableOpacity,
+  Switch,
 } from 'react-native';
 import { RouteProp, useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -21,6 +22,11 @@ import {
   findExerciseIdByProgramName,
   getPhaseSubstitutionsForPhase,
   getOrCreateSubstitutionExercise,
+  getExerciseTracksBrand,
+  setExerciseTracksBrand,
+  getExerciseLoggedBrands,
+  getExerciseSelectedBrand,
+  getExerciseAggregateStats,
 } from '../db/database';
 import { getProgramSubstitutions } from '../data/exerciseProgramSubstitutions';
 import { useWorkoutStore } from '../store/useWorkoutStore';
@@ -122,24 +128,55 @@ export default function ExerciseDetailScreen() {
   const [estimated1RMHistory, setEstimated1RMHistory] = useState<any[]>([]);
   const [pr, setPr] = useState<any>(null);
   const [exerciseDetail, setExerciseDetail] = useState<any>(null);
+  const [tracksBrand, setTracksBrandState] = useState(false);
+  const [brandSilos, setBrandSilos] = useState<{ label: string; value: string | null }[]>([]);
+  /** Which machine's data the charts show. undefined = aggregate ("All machines"). */
+  const [statsBrand, setStatsBrand] = useState<string | null | undefined>(undefined);
+  const [aggStats, setAggStats] = useState<{
+    sessions: number;
+    total_reps: number;
+    total_volume: number;
+    best_e1rm: number;
+  } | null>(null);
   const [inactiveExerciseNoticeOpen, setInactiveExerciseNoticeOpen] = useState(false);
   const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false);
   const [replacePendingId, setReplacePendingId] = useState<number | null>(null);
 
+  // Exercise metadata + which machine silos have data (drives the brand selector).
   useEffect(() => {
-    const weightData = getExerciseWeightHistory(exerciseId);
-    const volumeData = getExerciseVolumeHistory(exerciseId);
-    const prData = getExercisePR(exerciseId);
-    const e1rmData = getEstimated1RMHistory(exerciseId);
     const allExs = getAllExercises();
     const detail = allExs.find((e: any) => e.id === exerciseId);
-
-    setWeightHistory(weightData);
-    setVolumeHistory(volumeData);
-    setEstimated1RMHistory(e1rmData);
-    setPr(prData);
     setExerciseDetail(detail);
+
+    const tracks = getExerciseTracksBrand(exerciseId, detail?.name);
+    setTracksBrandState(tracks);
+    setAggStats(getExerciseAggregateStats(exerciseId));
+
+    if (!tracks) {
+      setBrandSilos([]);
+      setStatsBrand(undefined);
+      return;
+    }
+    const { brands, hasNoBrand } = getExerciseLoggedBrands(exerciseId);
+    const silos: { label: string; value: string | null }[] = [
+      ...brands.map((b) => ({ label: b, value: b as string | null })),
+      ...(hasNoBrand ? [{ label: 'No brand', value: null as string | null }] : []),
+    ];
+    setBrandSilos(silos);
+    const values = silos.map((s) => s.value);
+    const selected = getExerciseSelectedBrand(exerciseId);
+    setStatsBrand(
+      values.length === 0 ? undefined : values.includes(selected) ? selected : values[0]
+    );
   }, [exerciseId]);
+
+  // Chart/PR data, siloed to the selected machine for brand-tracked exercises.
+  useEffect(() => {
+    setWeightHistory(getExerciseWeightHistory(exerciseId, statsBrand));
+    setVolumeHistory(getExerciseVolumeHistory(exerciseId, statsBrand));
+    setPr(getExercisePR(exerciseId, statsBrand));
+    setEstimated1RMHistory(getEstimated1RMHistory(exerciseId, statsBrand));
+  }, [exerciseId, statsBrand]);
 
   const templateExerciseNameForSubs = useMemo(() => {
     return (
@@ -266,6 +303,112 @@ export default function ExerciseDetailScreen() {
           <Text style={styles.emptyText}>Complete this exercise in a workout to see your progress here.</Text>
         </View>
       )}
+
+      {/* Machine brand tracking */}
+      <View style={styles.brandToggleCard}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.brandToggleTitle}>Track machine brand</Text>
+          <Text style={styles.brandToggleHint}>
+            {tracksBrand
+              ? 'During workouts you can pick a manufacturer; weights are saved separately per brand.'
+              : 'Turn on for machines/cables to log and prefill weights per manufacturer.'}
+          </Text>
+        </View>
+        <Switch
+          value={tracksBrand}
+          onValueChange={(v) => {
+            setExerciseTracksBrand(exerciseId, v);
+            setTracksBrandState(v);
+            // Re-derive silos/selector for the new mode.
+            if (v) {
+              const { brands, hasNoBrand } = getExerciseLoggedBrands(exerciseId);
+              const silos: { label: string; value: string | null }[] = [
+                ...brands.map((b) => ({ label: b, value: b as string | null })),
+                ...(hasNoBrand ? [{ label: 'No brand', value: null as string | null }] : []),
+              ];
+              setBrandSilos(silos);
+              const values = silos.map((s) => s.value);
+              const selected = getExerciseSelectedBrand(exerciseId);
+              setStatsBrand(
+                values.length === 0 ? undefined : values.includes(selected) ? selected : values[0]
+              );
+            } else {
+              setBrandSilos([]);
+              setStatsBrand(undefined);
+            }
+          }}
+          trackColor={{ false: colors.border, true: colors.accent + '88' }}
+          thumbColor={tracksBrand ? colors.accent : colors.textTertiary}
+        />
+      </View>
+
+      {/* Whole-history rollup across every machine */}
+      {tracksBrand && aggStats && aggStats.sessions > 0 ? (
+        <View style={styles.aggCard}>
+          <Text style={styles.aggTitle}>ACROSS ALL MACHINES</Text>
+          <View style={styles.aggGrid}>
+            <View style={styles.aggItem}>
+              <Text style={styles.aggValue}>{aggStats.sessions}</Text>
+              <Text style={styles.aggLabel}>Sessions</Text>
+            </View>
+            <View style={styles.aggItem}>
+              <Text style={styles.aggValue}>{aggStats.total_reps.toLocaleString()}</Text>
+              <Text style={styles.aggLabel}>Total reps</Text>
+            </View>
+            <View style={styles.aggItem}>
+              <Text style={styles.aggValue}>{aggStats.total_volume.toLocaleString()}</Text>
+              <Text style={styles.aggLabel}>Volume ({WEIGHT_UNIT})</Text>
+            </View>
+            <View style={styles.aggItem}>
+              <Text style={styles.aggValue}>{aggStats.best_e1rm || '—'}</Text>
+              <Text style={styles.aggLabel}>Best est. 1RM</Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Per-machine stats selector */}
+      {tracksBrand && brandSilos.length > 0 ? (
+        <View style={styles.brandStatsCard}>
+          <Text style={styles.brandStatsLabel}>PROGRESS CHARTS</Text>
+          <View style={styles.brandStatsChips}>
+            <TouchableOpacity
+              style={[styles.brandStatsChip, statsBrand === undefined && styles.brandStatsChipActive]}
+              onPress={() => setStatsBrand(undefined)}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.brandStatsChipText,
+                  statsBrand === undefined && styles.brandStatsChipTextActive,
+                ]}
+              >
+                All machines
+              </Text>
+            </TouchableOpacity>
+            {brandSilos.map((s) => {
+              const active = statsBrand === s.value;
+              return (
+                <TouchableOpacity
+                  key={s.label}
+                  style={[styles.brandStatsChip, active && styles.brandStatsChipActive]}
+                  onPress={() => setStatsBrand(s.value)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.brandStatsChipText, active && styles.brandStatsChipTextActive]}>
+                    {s.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Text style={styles.brandStatsHint}>
+            {statsBrand === undefined
+              ? "Combined across every machine — good for volume and rep trends, but raw weights aren't directly comparable between machines."
+              : 'Charts and PR below are for this machine only, so different machines don’t mix.'}
+          </Text>
+        </View>
+      ) : null}
 
       {/* Exercise info */}
       {exerciseDetail && (
@@ -592,6 +735,69 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: 8 },
   emptyText: { color: colors.textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 20 },
+
+  brandToggleCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: colors.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 16,
+    marginBottom: 16,
+  },
+  brandToggleTitle: { color: colors.text, fontSize: 15, fontWeight: '600', marginBottom: 3 },
+  brandToggleHint: { color: colors.textTertiary, fontSize: 12, lineHeight: 16 },
+
+  brandStatsCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 14,
+    marginBottom: 16,
+  },
+  brandStatsLabel: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 10,
+  },
+  brandStatsChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  brandStatsChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    backgroundColor: colors.surfaceElevated,
+  },
+  brandStatsChipActive: { backgroundColor: colors.accent + '22', borderColor: colors.accent + '77' },
+  brandStatsChipText: { color: colors.textSecondary, fontSize: 13, fontWeight: '600' },
+  brandStatsChipTextActive: { color: colors.accent },
+  brandStatsHint: { color: colors.textTertiary, fontSize: 11, lineHeight: 15, marginTop: 10 },
+
+  aggCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 14,
+    marginBottom: 16,
+  },
+  aggTitle: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginBottom: 12,
+  },
+  aggGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  aggItem: { width: '50%', marginBottom: 10 },
+  aggValue: { color: colors.text, fontSize: 20, fontWeight: '700' },
+  aggLabel: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
 
   infoCard: {
     backgroundColor: colors.surface,
