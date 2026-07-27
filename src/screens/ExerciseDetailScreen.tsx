@@ -319,6 +319,8 @@ export default function ExerciseDetailScreen() {
           onValueChange={(v) => {
             setExerciseTracksBrand(exerciseId, v);
             setTracksBrandState(v);
+            // Apply to an in-progress workout so the chip appears without restarting it.
+            useWorkoutStore.getState().refreshBrandTrackingForSession();
             // Re-derive silos/selector for the new mode.
             if (v) {
               const { brands, hasNoBrand } = getExerciseLoggedBrands(exerciseId);

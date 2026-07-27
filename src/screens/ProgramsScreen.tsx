@@ -18,7 +18,14 @@ import {
   deleteCustomProgram,
   ProgramRow,
 } from '../db/database';
-import { AppConfirmModal, AppInputModal, AppNoticeModal } from '../components/AppModalDialogs';
+import { AppConfirmModal, AppNoticeModal } from '../components/AppModalDialogs';
+import NewProgramModal from '../components/NewProgramModal';
+import {
+  isAiConfigured,
+  generateProgramPlan,
+  createProgramFromPlan,
+} from '../services/aiProgramGenerator';
+import { PROGRAM_TEMPLATES } from '../data/programTemplates';
 
 type Nav = NativeStackNavigationProp<HomeStackParamList, 'Programs'>;
 
@@ -35,6 +42,9 @@ export default function ProgramsScreen() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [programToDelete, setProgramToDelete] = useState<ProgramListItem | null>(null);
   const [activeWorkoutNotice, setActiveWorkoutNotice] = useState(false);
+  const [aiConfigured, setAiConfigured] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [notice, setNotice] = useState<{ title: string; message: string } | null>(null);
 
   const refresh = useCallback(() => {
     const rows = getAllPrograms().map((p) => ({
@@ -44,7 +54,48 @@ export default function ProgramsScreen() {
         : getProgramDays(p.id).filter((d) => d.workout_id != null).length,
     }));
     setPrograms(rows);
+    setAiConfigured(isAiConfigured());
   }, []);
+
+  /** Builds a built-in template through the same pipeline as an AI plan. */
+  function handleUseTemplate(templateId: string, nameOverride: string) {
+    const template = PROGRAM_TEMPLATES.find((t) => t.id === templateId);
+    if (!template) return;
+    const name = nameOverride.trim() || template.name;
+    try {
+      const programId = createProgramFromPlan(name, template.plan);
+      setCreateModalOpen(false);
+      refresh();
+      navigation.navigate('ProgramEdit', { programId, programName: name });
+      setNotice({ title: 'Program created', message: template.plan.summary });
+    } catch (e) {
+      setNotice({
+        title: 'Could not create program',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  async function handleGenerate(name: string, memo: string) {
+    setGenerating(true);
+    try {
+      const plan = await generateProgramPlan(name, memo);
+      const programId = createProgramFromPlan(name, plan);
+      setGenerating(false);
+      setCreateModalOpen(false);
+      refresh();
+      navigation.navigate('ProgramEdit', { programId, programName: name });
+      if (plan.summary) {
+        setNotice({ title: 'Program created', message: plan.summary });
+      }
+    } catch (e) {
+      setGenerating(false);
+      setNotice({
+        title: 'Could not generate program',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
 
   useFocusEffect(refresh);
 
@@ -113,19 +164,19 @@ export default function ProgramsScreen() {
         </TouchableOpacity>
       </ScrollView>
 
-      <AppInputModal
+      <NewProgramModal
         visible={createModalOpen}
-        title="New program"
-        message="Name your program, then lay out its 7-day cycle."
-        placeholder="e.g. Upper/Lower 4-day"
-        submitText="Create"
+        aiConfigured={aiConfigured}
+        busy={generating}
         onCancel={() => setCreateModalOpen(false)}
-        onSubmit={(name) => {
+        onCreateEmpty={(name) => {
           setCreateModalOpen(false);
           const programId = createCustomProgram(name);
           refresh();
           navigation.navigate('ProgramEdit', { programId, programName: name });
         }}
+        onGenerate={handleGenerate}
+        onUseTemplate={handleUseTemplate}
       />
 
       <AppConfirmModal
@@ -157,6 +208,13 @@ export default function ProgramsScreen() {
         title="Workout in progress"
         message="Finish or discard your current workout before changing programs."
         onClose={() => setActiveWorkoutNotice(false)}
+      />
+
+      <AppNoticeModal
+        visible={notice !== null}
+        title={notice?.title ?? ''}
+        message={notice?.message ?? ''}
+        onClose={() => setNotice(null)}
       />
     </View>
   );

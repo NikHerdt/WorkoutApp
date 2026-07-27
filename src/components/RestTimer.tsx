@@ -14,10 +14,8 @@ import { useWorkoutStore } from '../store/useWorkoutStore';
 import {
   scheduleRestEndNotification,
   cancelRestEndNotification,
-  updateRestTimerNotification,
-  dismissRestTimerNotification,
-  scheduleRestTimerCountdownNotifications,
-  cancelRestTimerCountdownNotifications,
+  showRestTimerOngoingNotification,
+  dismissRestTimerOngoingNotification,
 } from '../utils/restTimerNotification';
 
 export default function RestTimer() {
@@ -26,6 +24,7 @@ export default function RestTimer() {
     restTimerMinimized,
     restTimerSeconds,
     restTimerTotal,
+    restTimerRunId,
     stopRestTimer,
     setRestTimerMinimized,
     tickRestTimer,
@@ -38,33 +37,32 @@ export default function RestTimer() {
   // Track whether the timer reached zero naturally so we don't cancel the end notification.
   const naturallyCompletedRef = useRef(false);
 
+  // Keyed on restTimerRunId as well as restTimerActive: completing another set
+  // while a timer is already running starts a *new* timer without toggling
+  // `restTimerActive`, so without the run id this effect wouldn't re-run and the
+  // previous timer's end notification and animation would linger alongside it.
   useEffect(() => {
     if (restTimerActive) {
       naturallyCompletedRef.current = false;
 
+      // Reschedules from scratch (cancels any previous pending alert).
       scheduleRestEndNotification(restTimerSeconds);
       if (appStateRef.current !== 'active') {
-        updateRestTimerNotification(restTimerSeconds);
+        showRestTimerOngoingNotification(restTimerSeconds);
       } else {
-        dismissRestTimerNotification();
+        dismissRestTimerOngoingNotification();
       }
 
       intervalRef.current = setInterval(() => {
         tickRestTimer();
-
-        const state = useWorkoutStore.getState();
-        if (
-          state.restTimerActive &&
-          state.restTimerSeconds > 0 &&
-          appStateRef.current !== 'active'
-        ) {
-          updateRestTimerNotification(state.restTimerSeconds);
-        } else if (!state.restTimerActive) {
+        if (!useWorkoutStore.getState().restTimerActive) {
           // Timer hit zero — mark as natural completion so cleanup skips cancellation.
           naturallyCompletedRef.current = true;
         }
       }, 1000);
 
+      progressAnim.stopAnimation();
+      progressAnim.setValue(1);
       Animated.timing(progressAnim, {
         toValue: 0,
         duration: restTimerSeconds * 1000,
@@ -75,10 +73,9 @@ export default function RestTimer() {
         // User tapped Skip — cancel the scheduled end notification.
         cancelRestEndNotification();
       }
-      cancelRestTimerCountdownNotifications();
       naturallyCompletedRef.current = false;
 
-      dismissRestTimerNotification();
+      dismissRestTimerOngoingNotification();
 
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -89,7 +86,7 @@ export default function RestTimer() {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [restTimerActive]);
+  }, [restTimerActive, restTimerRunId]);
 
   // Handle app going to background and returning to foreground.
   useEffect(() => {
@@ -103,14 +100,14 @@ export default function RestTimer() {
         nextState === 'active' && (prev === 'background' || prev === 'inactive');
 
       if (isGoingBackground && useWorkoutStore.getState().restTimerActive) {
-        const remaining = useWorkoutStore.getState().restTimerSeconds;
-        scheduleRestTimerCountdownNotifications(remaining);
+        // One ongoing notification showing the end time — the scheduled
+        // "rest complete" alert is what actually fires on time.
+        showRestTimerOngoingNotification(useWorkoutStore.getState().restTimerSeconds);
       }
 
       if (isReturningForeground && useWorkoutStore.getState().restTimerActive) {
         // Keep the tray clean while app is visible.
-        cancelRestTimerCountdownNotifications();
-        dismissRestTimerNotification();
+        dismissRestTimerOngoingNotification();
 
         // Resync the stored countdown from wall-clock elapsed time.
         syncRestTimer();
@@ -133,15 +130,7 @@ export default function RestTimer() {
 
           intervalRef.current = setInterval(() => {
             tickRestTimer();
-
-            const state = useWorkoutStore.getState();
-            if (
-              state.restTimerActive &&
-              state.restTimerSeconds > 0 &&
-              appStateRef.current !== 'active'
-            ) {
-              updateRestTimerNotification(state.restTimerSeconds);
-            } else if (!state.restTimerActive) {
+            if (!useWorkoutStore.getState().restTimerActive) {
               naturallyCompletedRef.current = true;
             }
           }, 1000);

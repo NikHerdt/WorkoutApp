@@ -5,7 +5,7 @@ import {
   parseServiceAccountKey,
   ServiceAccountKey,
 } from './gcs';
-import { CLOUD_SYNC_CONFIG } from '../config/cloudSync.local';
+import { GCS_BUCKET, GCS_SERVICE_ACCOUNT_JSON } from '../config/env';
 
 /**
  * Full-database JSON backup to a GCS bucket. Uploaded after every finished
@@ -52,11 +52,11 @@ export interface CloudSyncStatus {
   pending: boolean;
 }
 
+/** Build-time config from `.env`, when present. In-app settings take precedence. */
 function getBakedInConfig(): { bucket: string; saJson: string } | null {
-  const bucket = (CLOUD_SYNC_CONFIG.bucket ?? '').trim().replace(/^gs:\/\//, '');
-  const saJson = (CLOUD_SYNC_CONFIG.serviceAccountJson ?? '').trim();
-  if (!bucket || !saJson) return null;
-  return { bucket, saJson };
+  const bucket = GCS_BUCKET.replace(/^gs:\/\//, '');
+  if (!bucket || !GCS_SERVICE_ACCOUNT_JSON) return null;
+  return { bucket, saJson: GCS_SERVICE_ACCOUNT_JSON };
 }
 
 export function getCloudSyncStatus(): CloudSyncStatus {

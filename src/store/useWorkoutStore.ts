@@ -330,6 +330,12 @@ interface WorkoutState {
   restTimerTotal: number;
   /** Unix ms timestamp when the current rest period ends. Used to resync after backgrounding. */
   restTimerEndTime: number | null;
+  /**
+   * Incremented every time a rest timer starts. Lets the timer UI notice a
+   * restart that happens while a timer is already running (completing another
+   * set) and cancel/reschedule instead of overlapping the previous one.
+   */
+  restTimerRunId: number;
 
   // Actions
   loadSettings: () => void;
@@ -358,6 +364,8 @@ interface WorkoutState {
   replaceActiveExercise: (exerciseIndex: number, replacementExerciseId: number) => void;
   /** Change the machine brand for an active exercise, re-filling its sets from that brand's history. */
   setMachineBrand: (exerciseIndex: number, brand: string | null) => void;
+  /** Re-read brand-tracking settings for the active session's exercises (after toggling one). */
+  refreshBrandTrackingForSession: () => void;
   /** Appends an exercise to the active session by exercise id. */
   addExerciseToSession: (exerciseId: number) => void;
   /** Removes an exercise from the active session by index. Stops the rest timer. */
@@ -392,6 +400,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   restTimerSeconds: 0,
   restTimerTotal: 0,
   restTimerEndTime: null,
+  restTimerRunId: 0,
 
   loadSettings: () => {
     const restTimerEnabledStr = getSetting('rest_timer_enabled');
@@ -886,6 +895,27 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     persistActiveWorkoutState(get());
   },
 
+  refreshBrandTrackingForSession: () => {
+    const { activeExercises } = get();
+    if (activeExercises.length === 0) return;
+    let changed = false;
+    const next = activeExercises.map((ex) => {
+      const tracks = getExerciseTracksBrand(ex.exerciseId, ex.exerciseName);
+      if (tracks === ex.tracksBrand) return ex;
+      changed = true;
+      return {
+        ...ex,
+        tracksBrand: tracks,
+        // Turning tracking on adopts the exercise's last-used brand; turning it
+        // off drops back to the un-siloed history.
+        machineBrand: tracks ? getExerciseSelectedBrand(ex.exerciseId) : null,
+      };
+    });
+    if (!changed) return;
+    set({ activeExercises: next });
+    persistActiveWorkoutState(get());
+  },
+
   setRestTimerEnabled: (enabled) => {
     setSetting('rest_timer_enabled', enabled ? '1' : '0');
     set({ restTimerEnabled: enabled });
@@ -922,13 +952,14 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
   },
 
   startRestTimer: (seconds) => {
-    set({
+    set((state) => ({
       restTimerActive: true,
       restTimerMinimized: false,
       restTimerSeconds: seconds,
       restTimerTotal: seconds,
       restTimerEndTime: Date.now() + seconds * 1000,
-    });
+      restTimerRunId: state.restTimerRunId + 1,
+    }));
     persistActiveWorkoutState(get());
   },
 

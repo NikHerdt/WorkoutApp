@@ -791,6 +791,57 @@ export function getProgramWorkouts(programId: number) {
   return getWorkoutsByPhase(program.phase_id);
 }
 
+export interface NewProgramExercise {
+  name: string;
+  muscleGroup: string;
+  warmupSets: number;
+  workingSets: number;
+  targetReps: string;
+  targetRpe: string;
+  restSeconds: number;
+}
+
+/**
+ * Append an exercise to a workout with explicit programming. Used when building
+ * a program from a spec (e.g. AI-generated) rather than copying an existing row.
+ */
+export function addExerciseToWorkout(workoutId: number, ex: NewProgramExercise): number {
+  const maxOrder = getDb().getFirstSync<{ max_order: number | null }>(
+    'SELECT MAX(order_index) as max_order FROM exercises WHERE workout_id = ?',
+    [workoutId]
+  );
+  const nextOrder = (maxOrder?.max_order ?? -1) + 1;
+  const result = getDb().runSync(
+    `INSERT INTO exercises
+       (workout_id, name, order_index, warmup_sets, working_sets, target_reps,
+        target_rpe, rest_seconds, notes, muscle_group, is_custom)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, 1)`,
+    [
+      workoutId,
+      ex.name.trim(),
+      nextOrder,
+      Math.max(0, ex.warmupSets),
+      Math.max(1, ex.workingSets),
+      ex.targetReps,
+      ex.targetRpe,
+      Math.max(0, ex.restSeconds),
+      ex.muscleGroup,
+    ]
+  );
+  return result.lastInsertRowId;
+}
+
+/** Distinct exercise names with their muscle group — the vocabulary for program generation. */
+export function getExerciseCatalog(): { name: string; muscle_group: string }[] {
+  return getDb().getAllSync<{ name: string; muscle_group: string }>(
+    `SELECT name, COALESCE(MAX(muscle_group), '') as muscle_group
+     FROM exercises
+     WHERE name IS NOT NULL AND name != ''
+     GROUP BY name
+     ORDER BY muscle_group, name`
+  );
+}
+
 export function getWorkoutById(workoutId: number) {
   return getDb().getFirstSync<{ id: number; phase_id: number; name: string; day_type: string }>(
     'SELECT * FROM workouts WHERE id = ?',

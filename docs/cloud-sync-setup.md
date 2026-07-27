@@ -59,31 +59,29 @@ gcloud storage buckets update gs://my-workout-backups --lifecycle-file=lifecycle
 
 ## 2. Configure the app
 
-**Option A — baked into the build (recommended for personal use):**
+**Option A — via `.env` (baked into the build):**
 
-1. Create `src/config/cloudSync.local.ts` (gitignored — never commit it):
+1. Copy `.env.example` to `.env` (gitignored — never commit it).
+2. Set the bucket name, then compact the downloaded key onto one line and wrap
+   it in **single** quotes:
 
-   ```ts
-   export const CLOUD_SYNC_CONFIG = {
-     bucket: 'my-workout-backups', // no gs:// prefix
-     serviceAccountJson: `
-   { ...paste the full downloaded JSON key here... }
-   `,
-   };
+   ```bash
+   node -e "console.log(JSON.stringify(require('./workout-backup-key.json')))"
    ```
 
-   **Important:** this is a JS template literal, not a raw text file — `\n`
-   escape sequences get converted to real newlines *while the source is
-   parsed*, before `JSON.parse` ever runs on the string. The downloaded key's
-   `private_key` field contains many `\n` line breaks, so after pasting it
-   in, find-and-replace every `\n` inside the pasted JSON with `\\n`
-   (double the backslash). Otherwise the string that reaches `JSON.parse` at
-   runtime contains literal newlines instead of the two-character escape
-   sequence, which is invalid JSON and fails silently with "cloud sync is
-   not configured".
+   ```dotenv
+   EXPO_PUBLIC_GCS_BUCKET=my-workout-backups
+   EXPO_PUBLIC_GCS_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
+   ```
 
-2. Rebuild/reload the app. The Cloud backup row on the Home screen should show
-   your bucket with "(built into app)".
+   Single quotes matter: they stop dotenv from expanding the `\n` escapes inside
+   `private_key`, which must reach `JSON.parse` as the literal two-character
+   sequence. Double quotes turn them into real newlines, which is invalid inside
+   a JSON string and fails with "cloud sync is not configured".
+
+3. Rebuild the app (env values are inlined at build time, so a reload alone is
+   not enough). The Cloud backup row on the Home screen should show your bucket
+   with "(built into app)".
 
 **Option B — in-app:**
 
@@ -107,9 +105,17 @@ from your computer afterwards.
 
 ## Security notes
 
-- The service account key is stored in the app's private SQLite database on the
-  device, and nowhere else. Anyone with the key can read/write the backup
-  bucket, which is why the account is scoped to that single bucket.
+- **`.env` keeps secrets out of git — it does not make them secret in the app.**
+  Expo inlines every `EXPO_PUBLIC_*` value into the JS bundle at build time, so
+  anyone with the APK can extract them. Keys entered **in-app** are better in
+  this respect: they live in the app's private database, not the bundle.
+- Because the key ships in the APK, the service account **must** be scoped to
+  the single backup bucket (`roles/storage.objectAdmin` on that bucket only,
+  never project-wide). Then a leaked key can reach nothing else. Rotate it if you
+  ever share the APK.
+- The only way to keep a credential fully off the device is to put a backend you
+  control between the app and the API. That is the right answer if this ever
+  stops being a personal build.
 - If the key leaks, revoke it:
   `gcloud iam service-accounts keys list --iam-account=workout-app-backup@MY_PROJECT.iam.gserviceaccount.com`
   then `gcloud iam service-accounts keys delete <KEY_ID> --iam-account=...`,

@@ -30,11 +30,13 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# local env files — real secrets live here; .env.example is the committed template
+.env
+.env.*
+!.env.example
 
-# baked-in cloud sync credentials
-src/config/cloudSync.local.ts
+# legacy baked-in credential modules (superseded by .env)
+src/config/*.local.ts
 
 # typescript
 *.tsbuildinfo

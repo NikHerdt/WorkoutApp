@@ -23,6 +23,7 @@ import {
 } from '../db/database';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import CloudSyncSettings from '../components/CloudSyncSettings';
+import AiSettings from '../components/AiSettings';
 import { SCHEDULE, DAY_LABELS, DayType } from '../types';
 import { getWeekCountForPhase, projectPhaseAfterProgramWeeks } from '../data/programWeeks';
 import { AppConfirmModal, AppNoticeModal } from '../components/AppModalDialogs';
@@ -539,6 +540,7 @@ export default function HomeScreen() {
               thumbColor={restTimerEnabled ? colors.accent : colors.textTertiary}
             />
           </View>
+          <AiSettings />
           <CloudSyncSettings />
         </View>
 
