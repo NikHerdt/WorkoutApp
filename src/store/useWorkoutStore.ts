@@ -209,13 +209,34 @@ function renumberSets(sets: ActiveSet[]): ActiveSet[] {
   });
 }
 
+/** Programming a workout slot may override for one day. */
+export interface SlotProgramming {
+  warmup_sets?: number | null;
+  working_sets?: number | null;
+  target_reps?: string | null;
+  target_rpe?: string | null;
+  rest_seconds?: number | null;
+}
+
 function buildActiveExerciseState(
   exerciseId: number,
   slotTemplateExerciseId?: number,
-  brandOverride?: string | null
+  brandOverride?: string | null,
+  slot?: SlotProgramming
 ): ActiveExerciseState | null {
-  const ex = getExerciseById(exerciseId);
-  if (!ex) return null;
+  const base = getExerciseById(exerciseId);
+  if (!base) return null;
+
+  // Effective programming: the day's slot wins over the exercise's defaults, so
+  // a shared exercise still honours each program's prescription.
+  const ex = {
+    ...base,
+    warmup_sets: slot?.warmup_sets ?? base.warmup_sets,
+    working_sets: slot?.working_sets ?? base.working_sets,
+    target_reps: slot?.target_reps ?? base.target_reps,
+    target_rpe: slot?.target_rpe ?? base.target_rpe,
+    rest_seconds: slot?.rest_seconds ?? base.rest_seconds,
+  };
 
   const tracksBrand = getExerciseTracksBrand(ex.id, ex.name);
   const machineBrand = tracksBrand
@@ -290,6 +311,11 @@ function buildActiveExerciseState(
     slotTemplateExerciseId: slotTemplateExerciseId ?? exerciseId,
     tracksBrand,
     machineBrand,
+    warmupSets: ex.warmup_sets,
+    workingSets: ex.working_sets,
+    targetReps: String(ex.target_reps ?? ''),
+    targetRpe: String(ex.target_rpe ?? ''),
+    restSeconds: Number(ex.rest_seconds ?? 90),
   };
 }
 
@@ -467,7 +493,22 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       nextState.activeWorkoutId = persisted.activeWorkoutId;
       nextState.activeWorkoutName = persisted.activeWorkoutName;
       nextState.activeDayType = persisted.activeDayType;
-      nextState.activeExercises = persisted.activeExercises ?? [];
+      // A session persisted by an older build predates the effective-programming
+      // fields; backfill from the catalog so resuming can't break the rest timer.
+      nextState.activeExercises = (persisted.activeExercises ?? []).map((ex) => {
+        if (ex && typeof (ex as any).restSeconds === 'number') return ex;
+        const base = getExerciseById(ex.exerciseId);
+        const warmupCount = ex.sets?.filter((s) => s.setType === 'warmup').length ?? 0;
+        const workingCount = ex.sets?.filter((s) => s.setType === 'working').length ?? 0;
+        return {
+          ...ex,
+          warmupSets: warmupCount,
+          workingSets: Math.max(1, workingCount),
+          targetReps: String(base?.target_reps ?? ''),
+          targetRpe: String(base?.target_rpe ?? ''),
+          restSeconds: Number(base?.rest_seconds ?? 90),
+        };
+      });
       nextState.restTimerActive = persisted.restTimerActive;
       nextState.restTimerMinimized = persisted.restTimerMinimized;
       nextState.restTimerSeconds = persisted.restTimerSeconds;
@@ -530,7 +571,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     const activeExercises: ActiveExerciseState[] = [];
     for (const ex of exercises) {
       const effectiveId = pendingSubstitutions[ex.id] ?? ex.id;
-      const built = buildActiveExerciseState(effectiveId, ex.id);
+      const built = buildActiveExerciseState(effectiveId, ex.id, undefined, ex);
       if (built) activeExercises.push(built);
     }
 
@@ -677,10 +718,9 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
         sets[setIndex]?.setType === 'working' &&
         (field === 'weight' || field === 'reps')
       ) {
-        const dbEx = getExerciseById(ex.exerciseId);
         const synced = applyWarmupPresetsToIncompleteWarmups(
           sets,
-          dbEx?.target_reps ?? '',
+          ex.targetReps,
           ex.isTimed
         );
         exercises[exerciseIndex] = { ...ex, sets: synced };
@@ -784,14 +824,9 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       const insertAt = setType === 'warmup' ? warmupCount : sets.length;
       const newSets = [...sets.slice(0, insertAt), newSet, ...sets.slice(insertAt)];
       const renumbered = renumberSets(newSets);
-      const dbEx = getExerciseById(ex.exerciseId);
       exercises[exerciseIndex] = {
         ...ex,
-        sets: applyWarmupPresetsToIncompleteWarmups(
-          renumbered,
-          dbEx?.target_reps ?? '',
-          ex.isTimed
-        ),
+        sets: applyWarmupPresetsToIncompleteWarmups(renumbered, ex.targetReps, ex.isTimed),
       };
       return { activeExercises: exercises };
     });
@@ -807,14 +842,9 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       if (sets[setIndex]?.completed) return {};
       const newSets = sets.filter((_, i) => i !== setIndex);
       const renumbered = renumberSets(newSets);
-      const dbEx = getExerciseById(ex.exerciseId);
       exercises[exerciseIndex] = {
         ...ex,
-        sets: applyWarmupPresetsToIncompleteWarmups(
-          renumbered,
-          dbEx?.target_reps ?? '',
-          ex.isTimed
-        ),
+        sets: applyWarmupPresetsToIncompleteWarmups(renumbered, ex.targetReps, ex.isTimed),
       };
       return { activeExercises: exercises };
     });
@@ -873,7 +903,14 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     const rebuilt = buildActiveExerciseState(
       current.exerciseId,
       current.slotTemplateExerciseId,
-      normalized
+      normalized,
+      {
+        warmup_sets: current.warmupSets,
+        working_sets: current.workingSets,
+        target_reps: current.targetReps,
+        target_rpe: current.targetRpe,
+        rest_seconds: current.restSeconds,
+      }
     );
     if (!rebuilt) return;
     set((state) => {

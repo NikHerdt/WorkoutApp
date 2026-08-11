@@ -10,7 +10,7 @@ import { RouteProp, useFocusEffect, useRoute } from '@react-navigation/native';
 import { colors } from '../theme/colors';
 import {
   getExercisesByWorkout,
-  updateExerciseSetCounts,
+  updateSlotSetCounts,
   saveExercisesOrder,
   getExerciseById,
   addExerciseToWorkoutFromSource,
@@ -24,7 +24,10 @@ import { AppConfirmModal } from '../components/AppModalDialogs';
 type Route = RouteProp<HomeStackParamList, 'EditWorkout'>;
 
 interface ExerciseRow {
+  /** Shared exercise id. */
   id: number;
+  /** This workout's slot row — what reordering, removal and set edits act on. */
+  slot_id: number;
   name: string;
   muscle_group: string;
   warmup_sets: number;
@@ -47,10 +50,9 @@ export default function EditWorkoutScreen() {
   const [exerciseToRemove, setExerciseToRemove] = useState<{ id: number; name: string } | null>(null);
 
   /**
-   * Rows for this workout, with set counts and labels resolved to the effective
-   * (substituted) exercise — the same one the Home preview and the active
-   * workout use. Editing the counts writes to the substitution and keeps the
-   * template slot in sync, so all three views agree.
+   * Rows for this workout, with labels resolved to the effective (substituted)
+   * exercise — the same one the Home preview and the active workout use. Set
+   * counts come from the slot, so editing them changes this day only.
    */
   const buildDisplayRows = useCallback((): DisplayExerciseRow[] => {
     const rows = getExercisesByWorkout(workoutId) as ExerciseRow[];
@@ -60,8 +62,6 @@ export default function EditWorkoutScreen() {
         selectedId === ex.id ? ex : (getExerciseById(selectedId) as ExerciseRow | null);
       return {
         ...ex,
-        warmup_sets: selected?.warmup_sets ?? ex.warmup_sets,
-        working_sets: selected?.working_sets ?? ex.working_sets,
         displayId: selected?.id ?? ex.id,
         displayName: selected?.name ?? ex.name,
         displayMuscleGroup: selected?.muscle_group ?? ex.muscle_group,
@@ -75,28 +75,19 @@ export default function EditWorkoutScreen() {
     }, [buildDisplayRows])
   );
 
-  function adjustSets(
-    templateExerciseId: number,
-    selectedExerciseId: number,
-    field: 'warmup_sets' | 'working_sets',
-    delta: number
-  ) {
-    setExercises((prev) => {
-      const next = prev.map((ex) => {
-        if (ex.id !== templateExerciseId) return ex;
+  /** Set counts are per-slot: this changes today's prescription only. */
+  function adjustSets(slotId: number, field: 'warmup_sets' | 'working_sets', delta: number) {
+    setExercises((prev) =>
+      prev.map((ex) => {
+        if (ex.slot_id !== slotId) return ex;
         const updated = {
           ...ex,
           [field]: Math.max(field === 'working_sets' ? 1 : 0, ex[field] + delta),
         };
-        // Write the effective (selected) exercise, and keep the template slot in sync.
-        updateExerciseSetCounts(selectedExerciseId, updated.warmup_sets, updated.working_sets);
-        if (selectedExerciseId !== updated.id) {
-          updateExerciseSetCounts(updated.id, updated.warmup_sets, updated.working_sets);
-        }
+        updateSlotSetCounts(slotId, updated.warmup_sets, updated.working_sets);
         return updated;
-      });
-      return next;
-    });
+      })
+    );
   }
 
   function moveUp(index: number) {
@@ -105,7 +96,7 @@ export default function EditWorkoutScreen() {
       const next = [...prev];
       [next[index - 1], next[index]] = [next[index], next[index - 1]];
       const reordered = next.map((ex, i) => ({ ...ex, order_index: i }));
-      saveExercisesOrder(reordered.map((ex) => ({ id: ex.id, orderIndex: ex.order_index })));
+      saveExercisesOrder(reordered.map((ex) => ({ id: ex.slot_id, orderIndex: ex.order_index })));
       return reordered;
     });
   }
@@ -116,13 +107,13 @@ export default function EditWorkoutScreen() {
       const next = [...prev];
       [next[index], next[index + 1]] = [next[index + 1], next[index]];
       const reordered = next.map((ex, i) => ({ ...ex, order_index: i }));
-      saveExercisesOrder(reordered.map((ex) => ({ id: ex.id, orderIndex: ex.order_index })));
+      saveExercisesOrder(reordered.map((ex) => ({ id: ex.slot_id, orderIndex: ex.order_index })));
       return reordered;
     });
   }
 
-  function handleRemoveExercise(exerciseId: number, name: string) {
-    setExerciseToRemove({ id: exerciseId, name });
+  function handleRemoveExercise(slotId: number, name: string) {
+    setExerciseToRemove({ id: slotId, name });
   }
 
   return (
@@ -145,7 +136,7 @@ export default function EditWorkoutScreen() {
           </TouchableOpacity>
 
           {exercises.map((ex, index) => (
-            <View key={ex.id} style={styles.card}>
+            <View key={ex.slot_id} style={styles.card}>
               {/* Order arrows */}
               <View style={styles.orderCol}>
                 <TouchableOpacity
@@ -179,7 +170,7 @@ export default function EditWorkoutScreen() {
                     <View style={styles.stepper}>
                       <TouchableOpacity
                         style={[styles.stepBtn, ex.warmup_sets <= 0 && styles.stepBtnDisabled]}
-                        onPress={() => adjustSets(ex.id, ex.displayId, 'warmup_sets', -1)}
+                        onPress={() => adjustSets(ex.slot_id, 'warmup_sets', -1)}
                         disabled={ex.warmup_sets <= 0}
                       >
                         <Text style={styles.stepBtnText}>−</Text>
@@ -187,7 +178,7 @@ export default function EditWorkoutScreen() {
                       <Text style={styles.stepValue}>{ex.warmup_sets}</Text>
                       <TouchableOpacity
                         style={styles.stepBtn}
-                        onPress={() => adjustSets(ex.id, ex.displayId, 'warmup_sets', 1)}
+                        onPress={() => adjustSets(ex.slot_id, 'warmup_sets', 1)}
                       >
                         <Text style={styles.stepBtnText}>+</Text>
                       </TouchableOpacity>
@@ -200,7 +191,7 @@ export default function EditWorkoutScreen() {
                     <View style={styles.stepper}>
                       <TouchableOpacity
                         style={[styles.stepBtn, ex.working_sets <= 1 && styles.stepBtnDisabled]}
-                        onPress={() => adjustSets(ex.id, ex.displayId, 'working_sets', -1)}
+                        onPress={() => adjustSets(ex.slot_id, 'working_sets', -1)}
                         disabled={ex.working_sets <= 1}
                       >
                         <Text style={styles.stepBtnText}>−</Text>
@@ -208,7 +199,7 @@ export default function EditWorkoutScreen() {
                       <Text style={styles.stepValue}>{ex.working_sets}</Text>
                       <TouchableOpacity
                         style={styles.stepBtn}
-                        onPress={() => adjustSets(ex.id, ex.displayId, 'working_sets', 1)}
+                        onPress={() => adjustSets(ex.slot_id, 'working_sets', 1)}
                       >
                         <Text style={styles.stepBtnText}>+</Text>
                       </TouchableOpacity>
@@ -217,7 +208,7 @@ export default function EditWorkoutScreen() {
                 </View>
                 <TouchableOpacity
                   style={styles.removeBtn}
-                  onPress={() => handleRemoveExercise(ex.id, ex.displayName)}
+                  onPress={() => handleRemoveExercise(ex.slot_id, ex.displayName)}
                 >
                   <Text style={styles.removeBtnText}>Remove exercise</Text>
                 </TouchableOpacity>

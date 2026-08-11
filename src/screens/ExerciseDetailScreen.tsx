@@ -27,12 +27,14 @@ import {
   getExerciseLoggedBrands,
   getExerciseSelectedBrand,
   getExerciseAggregateStats,
+  updateExercise,
 } from '../db/database';
 import { getProgramSubstitutions } from '../data/exerciseProgramSubstitutions';
 import { useWorkoutStore } from '../store/useWorkoutStore';
 import type { ExerciseDetailParams } from '../navigation/AppNavigator';
 import { WEIGHT_UNIT, WEIGHT_UNIT_HEADER } from '../constants/weightUnits';
 import { AppConfirmModal, AppNoticeModal } from '../components/AppModalDialogs';
+import ExerciseEditModal from '../components/ExerciseEditModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_WIDTH = SCREEN_WIDTH - 64;
@@ -141,12 +143,17 @@ export default function ExerciseDetailScreen() {
   const [inactiveExerciseNoticeOpen, setInactiveExerciseNoticeOpen] = useState(false);
   const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false);
   const [replacePendingId, setReplacePendingId] = useState<number | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+
+  const reloadDetail = useCallback(() => {
+    const found = getAllExercises().find((e: any) => e.id === exerciseId);
+    setExerciseDetail(found);
+    return found;
+  }, [exerciseId]);
 
   // Exercise metadata + which machine silos have data (drives the brand selector).
   useEffect(() => {
-    const allExs = getAllExercises();
-    const detail = allExs.find((e: any) => e.id === exerciseId);
-    setExerciseDetail(detail);
+    const detail = reloadDetail();
 
     const tracks = getExerciseTracksBrand(exerciseId, detail?.name);
     setTracksBrandState(tracks);
@@ -415,6 +422,12 @@ export default function ExerciseDetailScreen() {
       {/* Exercise info */}
       {exerciseDetail && (
         <View style={styles.infoCard}>
+          <View style={styles.infoHeaderRow}>
+            <Text style={styles.infoHeaderTitle}>Programming</Text>
+            <TouchableOpacity onPress={() => setEditOpen(true)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={styles.infoEditBtn}>Edit</Text>
+            </TouchableOpacity>
+          </View>
           <View style={styles.infoRow}>
             <Text style={styles.infoLabel}>Sets</Text>
             <Text style={styles.infoValue}>
@@ -667,6 +680,31 @@ export default function ExerciseDetailScreen() {
 
       <View style={{ height: 32 }} />
 
+      <ExerciseEditModal
+        visible={editOpen}
+        usageCount={Number(exerciseDetail?.usage_count ?? 0)}
+        initial={
+          exerciseDetail
+            ? {
+                name: String(exerciseDetail.name ?? ''),
+                muscleGroup: String(exerciseDetail.muscle_group ?? ''),
+                warmupSets: Number(exerciseDetail.warmup_sets ?? 0),
+                workingSets: Number(exerciseDetail.working_sets ?? 1),
+                targetReps: String(exerciseDetail.target_reps ?? ''),
+                targetRpe: String(exerciseDetail.target_rpe ?? ''),
+                restSeconds: Number(exerciseDetail.rest_seconds ?? 90),
+                notes: String(exerciseDetail.notes ?? ''),
+              }
+            : null
+        }
+        onCancel={() => setEditOpen(false)}
+        onSave={(fields) => {
+          updateExercise(exerciseId, fields);
+          setEditOpen(false);
+          reloadDetail();
+        }}
+      />
+
       <AppNoticeModal
         visible={inactiveExerciseNoticeOpen}
         title="Not in current workout"
@@ -749,6 +787,19 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 16,
   },
+  infoHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  infoHeaderTitle: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  infoEditBtn: { color: colors.accent, fontSize: 13, fontWeight: '700' },
   brandToggleTitle: { color: colors.text, fontSize: 15, fontWeight: '600', marginBottom: 3 },
   brandToggleHint: { color: colors.textTertiary, fontSize: 12, lineHeight: 16 },
 

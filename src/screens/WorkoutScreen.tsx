@@ -235,7 +235,7 @@ export default function WorkoutScreen() {
                     </Text>
                     {detail && (
                       <Text style={styles.exerciseMeta}>
-                        {detail.warmup_sets > 0 ? `${detail.warmup_sets}W + ` : ''}{detail.working_sets} sets · {detail.target_reps} reps · RPE {detail.target_rpe}
+                        {exercise.warmupSets > 0 ? `${exercise.warmupSets}W + ` : ''}{exercise.workingSets} sets · {exercise.targetReps} reps{exercise.targetRpe ? ` · RPE ${exercise.targetRpe}` : ''}
                       </Text>
                     )}
                   </View>
@@ -329,7 +329,7 @@ export default function WorkoutScreen() {
                       if (setItem.completed) {
                         uncompleteSet(exerciseIndex, setIndex);
                       } else {
-                        completeSet(exerciseIndex, setIndex, detail?.rest_seconds ?? 90);
+                        completeSet(exerciseIndex, setIndex, exercise.restSeconds);
                       }
                     }}
                     onDelete={
@@ -359,9 +359,9 @@ export default function WorkoutScreen() {
                 >
                   <Text style={styles.setControlText}>+ Add set</Text>
                 </TouchableOpacity>
-                {detail?.rest_seconds > 0 && (
+                {exercise.restSeconds > 0 && (
                   <Text style={styles.restIndicatorText}>
-                    Rest {Math.floor(detail.rest_seconds / 60)}:{String(detail.rest_seconds % 60).padStart(2, '0')}
+                    Rest {Math.floor(exercise.restSeconds / 60)}:{String(exercise.restSeconds % 60).padStart(2, '0')}
                   </Text>
                 )}
               </View>

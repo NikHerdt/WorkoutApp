@@ -80,6 +80,16 @@ export interface ActiveExerciseState {
   tracksBrand: boolean;
   /** Selected machine brand for this exercise's weight silo (null = "No brand"). */
   machineBrand: string | null;
+  /**
+   * Programming in effect for this session — the workout slot's values where it
+   * overrides, otherwise the exercise's defaults. Captured at session start so
+   * a day's prescription can't be lost to the shared exercise's defaults.
+   */
+  warmupSets: number;
+  workingSets: number;
+  targetReps: string;
+  targetRpe: string;
+  restSeconds: number;
 }
 
 export interface PreviousSetInfo {

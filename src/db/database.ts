@@ -2,6 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { resolveAliasToCanonicalExerciseName } from '../data/programExerciseNameAliases';
 import { SEED_DATA } from './seed';
 import { toLocalDateYmd } from '../utils/dateLocal';
+import { mergeDuplicateExercises, clearRedundantSlotOverrides } from './mergeDuplicateExercises';
 
 
 let db: SQLite.SQLiteDatabase;
@@ -104,6 +105,31 @@ export function initDatabase(): void {
       PRIMARY KEY (program_id, day_index),
       FOREIGN KEY (program_id) REFERENCES programs(id)
     );
+
+    /*
+     * A workout's exercise slots. Splitting this out of the exercises table
+     * lets one exercise row be shared by every program that uses it (so history
+     * and stats stay unified), while each slot keeps its own programming.
+     * NULL override = fall back to the exercise's default.
+     */
+    CREATE TABLE IF NOT EXISTS workout_exercises (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      workout_id INTEGER NOT NULL,
+      exercise_id INTEGER NOT NULL,
+      order_index INTEGER NOT NULL DEFAULT 0,
+      warmup_sets INTEGER,
+      working_sets INTEGER,
+      target_reps TEXT,
+      target_rpe TEXT,
+      rest_seconds INTEGER,
+      is_superset INTEGER DEFAULT 0,
+      superset_group TEXT,
+      FOREIGN KEY (workout_id) REFERENCES workouts(id),
+      FOREIGN KEY (exercise_id) REFERENCES exercises(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workout_exercises_workout
+      ON workout_exercises(workout_id, order_index);
   `);
 
   migrateKgToLbs(database);
@@ -123,6 +149,12 @@ export function initDatabase(): void {
     database.runSync("INSERT OR IGNORE INTO settings (key, value) VALUES ('schedule_day', '0')");
     database.runSync("INSERT OR IGNORE INTO settings (key, value) VALUES ('current_phase_id', '1')");
   }
+
+  // Must run after seeding: the seed writes legacy one-row-per-workout exercises,
+  // and this converts them (and any existing install's rows) into a shared
+  // catalog plus per-workout slots.
+  migrateShareExercisesAcrossWorkouts(database);
+  migrateClearRedundantOverrides(database);
 
   database.runSync("INSERT OR IGNORE INTO settings (key, value) VALUES ('phase_week', '1')");
 }
@@ -258,6 +290,45 @@ function migrateAddMachineBrand(database: SQLite.SQLiteDatabase): void {
   }
 
   database.execSync('PRAGMA user_version = 6');
+}
+
+/**
+ * One-time: split `exercises` into a shared catalog plus `workout_exercises`
+ * slots, merging duplicate names and repointing history (user_version < 7).
+ */
+function migrateShareExercisesAcrossWorkouts(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  if ((verRow?.user_version ?? 0) >= 7) return;
+
+  // Foreign keys off: set_logs.exercise_id is repointed before the duplicate
+  // rows it referenced are deleted.
+  database.execSync('PRAGMA foreign_keys = OFF');
+  try {
+    database.execSync('BEGIN');
+    try {
+      mergeDuplicateExercises(database);
+      database.execSync('COMMIT');
+    } catch (e) {
+      database.execSync('ROLLBACK');
+      throw e;
+    }
+  } finally {
+    database.execSync('PRAGMA foreign_keys = ON');
+  }
+
+  database.execSync('PRAGMA user_version = 7');
+}
+
+/**
+ * One-time: drop slot overrides identical to the exercise's defaults so editing
+ * an exercise visibly updates the days that follow it (user_version < 8).
+ * Effective programming is unchanged.
+ */
+function migrateClearRedundantOverrides(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  if ((verRow?.user_version ?? 0) >= 8) return;
+  clearRedundantSlotOverrides(database);
+  database.execSync('PRAGMA user_version = 8');
 }
 
 /** Idempotent: the preprogrammed PPL×UL plan is represented as a builtin program row. */
@@ -802,42 +873,67 @@ export interface NewProgramExercise {
 }
 
 /**
- * Append an exercise to a workout with explicit programming. Used when building
- * a program from a spec (e.g. AI-generated) rather than copying an existing row.
+ * Append an exercise to a workout with explicit programming, reusing the shared
+ * catalog entry when the name already exists (so a generated program links up
+ * with existing history). The spec's programming becomes the slot's override.
  */
 export function addExerciseToWorkout(workoutId: number, ex: NewProgramExercise): number {
-  const maxOrder = getDb().getFirstSync<{ max_order: number | null }>(
-    'SELECT MAX(order_index) as max_order FROM exercises WHERE workout_id = ?',
+  const db = getDb();
+  const name = ex.name.trim();
+
+  const existing = db.getFirstSync<{ id: number }>(
+    'SELECT id FROM exercises WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1',
+    [name]
+  );
+  const exerciseId =
+    existing?.id ??
+    (db.runSync(
+      `INSERT INTO exercises
+         (name, muscle_group, warmup_sets, working_sets, target_reps, target_rpe,
+          rest_seconds, notes, is_custom)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '', 1)`,
+      [
+        name,
+        ex.muscleGroup,
+        Math.max(0, ex.warmupSets),
+        Math.max(1, ex.workingSets),
+        ex.targetReps,
+        ex.targetRpe,
+        Math.max(0, ex.restSeconds),
+      ]
+    ).lastInsertRowId as number);
+
+  const maxOrder = db.getFirstSync<{ max_order: number | null }>(
+    'SELECT MAX(order_index) as max_order FROM workout_exercises WHERE workout_id = ?',
     [workoutId]
   );
   const nextOrder = (maxOrder?.max_order ?? -1) + 1;
-  const result = getDb().runSync(
-    `INSERT INTO exercises
-       (workout_id, name, order_index, warmup_sets, working_sets, target_reps,
-        target_rpe, rest_seconds, notes, muscle_group, is_custom)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, 1)`,
+
+  db.runSync(
+    `INSERT INTO workout_exercises
+       (workout_id, exercise_id, order_index, warmup_sets, working_sets,
+        target_reps, target_rpe, rest_seconds)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       workoutId,
-      ex.name.trim(),
+      exerciseId,
       nextOrder,
       Math.max(0, ex.warmupSets),
       Math.max(1, ex.workingSets),
       ex.targetReps,
       ex.targetRpe,
       Math.max(0, ex.restSeconds),
-      ex.muscleGroup,
     ]
   );
-  return result.lastInsertRowId;
+  return exerciseId;
 }
 
-/** Distinct exercise names with their muscle group — the vocabulary for program generation. */
+/** The exercise vocabulary for program generation. */
 export function getExerciseCatalog(): { name: string; muscle_group: string }[] {
   return getDb().getAllSync<{ name: string; muscle_group: string }>(
-    `SELECT name, COALESCE(MAX(muscle_group), '') as muscle_group
+    `SELECT name, COALESCE(muscle_group, '') as muscle_group
      FROM exercises
      WHERE name IS NOT NULL AND name != ''
-     GROUP BY name
      ORDER BY muscle_group, name`
   );
 }
@@ -865,9 +961,33 @@ export function getWorkoutByPhaseAndType(phaseId: number, dayType: string) {
 }
 
 // Exercises
+/**
+ * A workout's exercises, with each slot's programming merged over the
+ * exercise's defaults. `id` is the shared exercise id (so history and stats are
+ * unified across programs); `slot_id` identifies the row in this workout.
+ */
 export function getExercisesByWorkout(workoutId: number) {
   return getDb().getAllSync<any>(
-    'SELECT * FROM exercises WHERE workout_id = ? ORDER BY order_index',
+    `SELECT
+       e.id,
+       we.id AS slot_id,
+       we.workout_id,
+       we.order_index,
+       e.name,
+       e.muscle_group,
+       e.notes,
+       e.is_custom,
+       COALESCE(we.warmup_sets,  e.warmup_sets)  AS warmup_sets,
+       COALESCE(we.working_sets, e.working_sets) AS working_sets,
+       COALESCE(we.target_reps,  e.target_reps)  AS target_reps,
+       COALESCE(we.target_rpe,   e.target_rpe)   AS target_rpe,
+       COALESCE(we.rest_seconds, e.rest_seconds) AS rest_seconds,
+       we.is_superset,
+       we.superset_group
+     FROM workout_exercises we
+     JOIN exercises e ON we.exercise_id = e.id
+     WHERE we.workout_id = ?
+     ORDER BY we.order_index, we.id`,
     [workoutId]
   );
 }
@@ -907,12 +1027,15 @@ export function findExerciseIdByProgramName(name: string): number | null {
   return null;
 }
 
+/**
+ * The exercise catalog — one row per movement, shared by every program that
+ * uses it. `usage_count` is how many workout slots reference it.
+ */
 export function getAllExercises() {
   return getDb().getAllSync<any>(
-    `SELECT e.*, w.name as workout_name, p.name as phase_name
+    `SELECT e.*,
+            (SELECT COUNT(*) FROM workout_exercises we WHERE we.exercise_id = e.id) AS usage_count
      FROM exercises e
-     LEFT JOIN workouts w ON e.workout_id = w.id
-     LEFT JOIN phases p ON w.phase_id = p.id
      ORDER BY e.muscle_group, e.name`
   );
 }
@@ -988,71 +1111,115 @@ export function getOrCreateSubstitutionExercise(
   return result.lastInsertRowId;
 }
 
-/** Update the warmup and working set counts for an exercise (affects future sessions). */
-export function updateExerciseSetCounts(
-  exerciseId: number,
+/**
+ * Set counts for one slot (this day only). Other programs using the same
+ * exercise are unaffected.
+ */
+export function updateSlotSetCounts(
+  slotId: number,
   warmupSets: number,
   workingSets: number
 ): void {
   getDb().runSync(
-    'UPDATE exercises SET warmup_sets = ?, working_sets = ? WHERE id = ?',
-    [Math.max(0, warmupSets), Math.max(1, workingSets), exerciseId]
+    'UPDATE workout_exercises SET warmup_sets = ?, working_sets = ? WHERE id = ?',
+    [Math.max(0, warmupSets), Math.max(1, workingSets), slotId]
   );
 }
 
-/** Persist a new order_index for each exercise in the given array. */
+export interface ExerciseDefaults {
+  name?: string;
+  muscleGroup?: string;
+  notes?: string;
+  warmupSets?: number;
+  workingSets?: number;
+  targetReps?: string;
+  targetRpe?: string;
+  restSeconds?: number;
+}
+
+/**
+ * Edit the shared exercise: its name, muscle group, notes, and the defaults used
+ * wherever a slot doesn't override them. Applies everywhere the exercise appears.
+ */
+export function updateExercise(exerciseId: number, fields: ExerciseDefaults): void {
+  const sets: string[] = [];
+  const params: any[] = [];
+  const push = (col: string, value: any) => {
+    sets.push(`${col} = ?`);
+    params.push(value);
+  };
+
+  if (fields.name !== undefined) push('name', fields.name.trim());
+  if (fields.muscleGroup !== undefined) push('muscle_group', fields.muscleGroup.trim());
+  if (fields.notes !== undefined) push('notes', fields.notes);
+  if (fields.warmupSets !== undefined) push('warmup_sets', Math.max(0, Math.round(fields.warmupSets)));
+  if (fields.workingSets !== undefined) push('working_sets', Math.max(1, Math.round(fields.workingSets)));
+  if (fields.targetReps !== undefined) push('target_reps', fields.targetReps.trim());
+  if (fields.targetRpe !== undefined) push('target_rpe', fields.targetRpe.trim());
+  if (fields.restSeconds !== undefined) push('rest_seconds', Math.max(0, Math.round(fields.restSeconds)));
+  if (sets.length === 0) return;
+
+  params.push(exerciseId);
+  getDb().runSync(`UPDATE exercises SET ${sets.join(', ')} WHERE id = ?`, params);
+}
+
+/**
+ * Clear a slot's overrides so it follows the exercise's defaults again.
+ * Pass the fields to reset; omitting them resets the programming fields.
+ */
+export function resetSlotToExerciseDefaults(slotId: number): void {
+  getDb().runSync(
+    `UPDATE workout_exercises
+       SET warmup_sets = NULL, working_sets = NULL, target_reps = NULL,
+           target_rpe = NULL, rest_seconds = NULL
+     WHERE id = ?`,
+    [slotId]
+  );
+}
+
+/** Persist a new order_index for each slot in the given array. */
 export function saveExercisesOrder(entries: { id: number; orderIndex: number }[]): void {
   const db = getDb();
   for (const entry of entries) {
-    db.runSync('UPDATE exercises SET order_index = ? WHERE id = ?', [entry.orderIndex, entry.id]);
+    db.runSync('UPDATE workout_exercises SET order_index = ? WHERE id = ?', [
+      entry.orderIndex,
+      entry.id,
+    ]);
   }
 }
 
-/** Duplicate an exercise's programming fields into a workout as a new slot. */
+/** Add an existing exercise to a workout as a new slot (no override — uses defaults). */
 export function addExerciseToWorkoutFromSource(workoutId: number, sourceExerciseId: number): number {
   const source = getExerciseById(sourceExerciseId);
   if (!source) {
     throw new Error('Source exercise not found');
   }
   const maxOrder = getDb().getFirstSync<{ max_order: number | null }>(
-    'SELECT MAX(order_index) as max_order FROM exercises WHERE workout_id = ?',
+    'SELECT MAX(order_index) as max_order FROM workout_exercises WHERE workout_id = ?',
     [workoutId]
   );
   const nextOrder = (maxOrder?.max_order ?? -1) + 1;
   const result = getDb().runSync(
-    `INSERT INTO exercises
-       (workout_id, name, order_index, warmup_sets, working_sets, target_reps,
-        target_rpe, rest_seconds, notes, muscle_group, is_superset, superset_group, is_custom)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      workoutId,
-      source.name,
-      nextOrder,
-      source.warmup_sets ?? 0,
-      source.working_sets ?? 1,
-      source.target_reps ?? '',
-      source.target_rpe ?? '',
-      source.rest_seconds ?? 90,
-      source.notes ?? '',
-      source.muscle_group ?? '',
-      source.is_superset ?? 0,
-      source.superset_group ?? null,
-      source.is_custom ?? 0,
-    ]
+    `INSERT INTO workout_exercises (workout_id, exercise_id, order_index)
+     VALUES (?, ?, ?)`,
+    [workoutId, sourceExerciseId, nextOrder]
   );
   return result.lastInsertRowId;
 }
 
-/** Remove an exercise row from a workout and compact the remaining order_index values. */
-export function removeExerciseFromWorkout(exerciseId: number): void {
-  const row = getDb().getFirstSync<{ workout_id: number | null }>(
-    'SELECT workout_id FROM exercises WHERE id = ?',
-    [exerciseId]
+/**
+ * Remove a slot from a workout and compact the remaining order values. The
+ * exercise itself (and its history) is untouched — it may be used elsewhere.
+ */
+export function removeExerciseFromWorkout(slotId: number): void {
+  const row = getDb().getFirstSync<{ workout_id: number }>(
+    'SELECT workout_id FROM workout_exercises WHERE id = ?',
+    [slotId]
   );
   if (!row?.workout_id) return;
-  getDb().runSync('DELETE FROM exercises WHERE id = ?', [exerciseId]);
-  const remaining = getExercisesByWorkout(row.workout_id) as { id: number }[];
-  saveExercisesOrder(remaining.map((ex, index) => ({ id: ex.id, orderIndex: index })));
+  getDb().runSync('DELETE FROM workout_exercises WHERE id = ?', [slotId]);
+  const remaining = getExercisesByWorkout(row.workout_id) as { slot_id: number }[];
+  saveExercisesOrder(remaining.map((ex, index) => ({ id: ex.slot_id, orderIndex: index })));
 }
 
 // Sessions
