@@ -45,5 +45,10 @@ src/config/*.local.ts
 /ios
 /android
 
+# local native module build output (the sources beside it ARE committed)
+modules/*/android/build/
+modules/*/android/.cxx/
+modules/*/build/
+
 # program files
 The_Ultimate_Push_Pull_Legs_System_-_5x copy.xlsx

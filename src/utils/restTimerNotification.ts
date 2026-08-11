@@ -1,5 +1,10 @@
 import * as Notifications from 'expo-notifications';
 import { AppState, Platform } from 'react-native';
+import {
+  isNativeRestTimerAvailable,
+  startNativeRestTimer,
+  stopNativeRestTimer,
+} from '../../modules/rest-timer-notification';
 
 /**
  * Rest timer notifications.
@@ -102,9 +107,36 @@ export async function dismissRestTimerOngoingNotification(): Promise<void> {
 }
 
 /**
+ * Starts the whole tray experience for a rest period: a live countdown that the
+ * system ticks down, replaced in place by the "rest complete" alert.
+ *
+ * Returns false when the native module isn't in this build, in which case the
+ * caller falls back to the expo-notifications path below.
+ */
+export function startNativeRestTimerNotification(seconds: number): boolean {
+  if (!isNativeRestTimerAvailable) return false;
+  const safeSeconds = Math.max(1, Math.floor(seconds));
+  return startNativeRestTimer(
+    Date.now() + safeSeconds * 1000,
+    'Resting',
+    'Rest complete',
+    'Ready for the next set.'
+  );
+}
+
+/** Cancels the native countdown and its pending alert. */
+export function stopNativeRestTimerNotification(): boolean {
+  return stopNativeRestTimer();
+}
+
+export const hasNativeRestTimer = isNativeRestTimerAvailable;
+
+/**
  * Schedules the "rest complete" alert for `seconds` from now so it fires even
  * when the app is backgrounded or killed. Any previously scheduled alert is
  * cancelled first, so restarting a timer never leaves two pending alerts.
+ *
+ * Fallback for builds without the native module.
  */
 export async function scheduleRestEndNotification(seconds: number): Promise<void> {
   await cancelRestEndNotification();

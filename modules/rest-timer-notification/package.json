@@ -1,0 +1,7 @@
+{
+  "name": "rest-timer-notification",
+  "version": "0.1.0",
+  "description": "Live rest-timer countdown notification (Android)",
+  "main": "index.ts",
+  "private": true
+}

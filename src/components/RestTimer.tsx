@@ -16,6 +16,9 @@ import {
   cancelRestEndNotification,
   showRestTimerOngoingNotification,
   dismissRestTimerOngoingNotification,
+  startNativeRestTimerNotification,
+  stopNativeRestTimerNotification,
+  hasNativeRestTimer,
 } from '../utils/restTimerNotification';
 
 export default function RestTimer() {
@@ -45,12 +48,16 @@ export default function RestTimer() {
     if (restTimerActive) {
       naturallyCompletedRef.current = false;
 
-      // Reschedules from scratch (cancels any previous pending alert).
-      scheduleRestEndNotification(restTimerSeconds);
-      if (appStateRef.current !== 'active') {
-        showRestTimerOngoingNotification(restTimerSeconds);
-      } else {
-        dismissRestTimerOngoingNotification();
+      // Native path: one notification that the system counts down and then
+      // replaces with the completion alert. Falls back to expo-notifications
+      // when the native module isn't in this build.
+      if (!startNativeRestTimerNotification(restTimerSeconds)) {
+        scheduleRestEndNotification(restTimerSeconds);
+        if (appStateRef.current !== 'active') {
+          showRestTimerOngoingNotification(restTimerSeconds);
+        } else {
+          dismissRestTimerOngoingNotification();
+        }
       }
 
       intervalRef.current = setInterval(() => {
@@ -70,12 +77,15 @@ export default function RestTimer() {
       }).start();
     } else {
       if (!naturallyCompletedRef.current) {
-        // User tapped Skip — cancel the scheduled end notification.
+        // User tapped Skip — drop the pending alert and clear the countdown.
+        stopNativeRestTimerNotification();
         cancelRestEndNotification();
       }
       naturallyCompletedRef.current = false;
 
-      dismissRestTimerOngoingNotification();
+      if (!hasNativeRestTimer) {
+        dismissRestTimerOngoingNotification();
+      }
 
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -99,15 +109,20 @@ export default function RestTimer() {
       const isReturningForeground =
         nextState === 'active' && (prev === 'background' || prev === 'inactive');
 
-      if (isGoingBackground && useWorkoutStore.getState().restTimerActive) {
-        // One ongoing notification showing the end time — the scheduled
-        // "rest complete" alert is what actually fires on time.
+      if (
+        !hasNativeRestTimer &&
+        isGoingBackground &&
+        useWorkoutStore.getState().restTimerActive
+      ) {
+        // Fallback only: show the end time. With the native module the
+        // countdown is already posted and ticking.
         showRestTimerOngoingNotification(useWorkoutStore.getState().restTimerSeconds);
       }
 
       if (isReturningForeground && useWorkoutStore.getState().restTimerActive) {
-        // Keep the tray clean while app is visible.
-        dismissRestTimerOngoingNotification();
+        // Fallback only: keep the tray clean while the app is visible. The
+        // native countdown stays up on purpose.
+        if (!hasNativeRestTimer) dismissRestTimerOngoingNotification();
 
         // Resync the stored countdown from wall-clock elapsed time.
         syncRestTimer();
