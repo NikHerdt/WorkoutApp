@@ -22,6 +22,8 @@ import ActionSheet, { ActionSheetAction } from '../components/ActionSheet';
 import { AppInputModal } from '../components/AppModalDialogs';
 import { toLocalDateYmd } from '../utils/dateLocal';
 import { WEIGHT_UNIT_HEADER } from '../constants/weightUnits';
+import { getRestInsightsForExercise, formatRest } from '../utils/restAnalysis';
+import { pushBodyWeightSilently } from '../services/healthConnect';
 
 type Nav = NativeStackNavigationProp<HomeStackParamList, 'Workout'>;
 
@@ -47,6 +49,8 @@ export default function WorkoutScreen() {
   } = useWorkoutStore();
 
   const [previousSetsMap, setPreviousSetsMap] = useState<Record<number, any[]>>({});
+  /** Data-backed rest per exercise id, shown alongside the programmed rest. */
+  const [suggestedRestMap, setSuggestedRestMap] = useState<Record<number, number>>({});
   const [expandedExercise, setExpandedExercise] = useState<number | null>(null);
   const [exerciseDetails, setExerciseDetails] = useState<Record<number, any>>({});
   const [substituteModalForIndex, setSubstituteModalForIndex] = useState<number | null>(null);
@@ -82,6 +86,20 @@ export default function WorkoutScreen() {
     setExerciseDetails(nextDetail);
     setPreviousSetsMap(nextPrev);
   }, [activeExerciseIds, activeExercises]);
+
+  // Rest suggestions only change between sessions, so compute them once per lineup.
+  useEffect(() => {
+    if (!activeExerciseIds) return;
+    const next: Record<number, number> = {};
+    for (const ae of activeExercises) {
+      const suggestion = getRestInsightsForExercise(
+        ae.exerciseId,
+        ae.tracksBrand ? ae.machineBrand : undefined
+      ).suggestion;
+      if (suggestion) next[ae.exerciseId] = suggestion.seconds;
+    }
+    setSuggestedRestMap(next);
+  }, [activeExerciseIds]);
 
   function handleStopWorkout() {
     setActionSheet({
@@ -360,9 +378,17 @@ export default function WorkoutScreen() {
                   <Text style={styles.setControlText}>+ Add set</Text>
                 </TouchableOpacity>
                 {exercise.restSeconds > 0 && (
-                  <Text style={styles.restIndicatorText}>
-                    Rest {Math.floor(exercise.restSeconds / 60)}:{String(exercise.restSeconds % 60).padStart(2, '0')}
-                  </Text>
+                  <View style={styles.restIndicatorGroup}>
+                    <Text style={styles.restIndicatorText}>
+                      Rest {Math.floor(exercise.restSeconds / 60)}:{String(exercise.restSeconds % 60).padStart(2, '0')}
+                    </Text>
+                    {suggestedRestMap[exercise.exerciseId] != null &&
+                    Math.abs(suggestedRestMap[exercise.exerciseId] - exercise.restSeconds) > 10 ? (
+                      <Text style={styles.restSuggestionText}>
+                        your data: {formatRest(suggestedRestMap[exercise.exerciseId])}
+                      </Text>
+                    ) : null}
+                  </View>
                 )}
               </View>
             </View>
@@ -459,6 +485,7 @@ export default function WorkoutScreen() {
         }}
         onSave={(dateYmd, lbs) => {
           upsertBodyWeightForDate(dateYmd, lbs);
+          pushBodyWeightSilently(dateYmd, lbs);
           setBodyWeightModal(false);
           completeFinishFlow();
         }}
@@ -646,6 +673,12 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 12,
     fontWeight: '600',
+  },
+  restIndicatorGroup: { alignItems: 'flex-end' },
+  restSuggestionText: {
+    color: colors.accentDim,
+    fontSize: 10,
+    marginTop: 2,
   },
   restIndicatorText: { color: colors.textTertiary, fontSize: 12 },
 

@@ -19,6 +19,7 @@ import {
   getBodyWeightForDate,
 } from '../db/database';
 import BodyWeightLogModal from '../components/BodyWeightLogModal';
+import { pushBodyWeightSilently } from '../services/healthConnect';
 import { WEIGHT_UNIT } from '../constants/weightUnits';
 import { toLocalDateYmd } from '../utils/dateLocal';
 import { useWorkoutStore } from '../store/useWorkoutStore';
@@ -300,6 +301,7 @@ export default function HistoryScreen() {
         onClose={() => setWeightModalOpen(false)}
         onSave={(dateYmd, lbs) => {
           upsertBodyWeightForDate(dateYmd, lbs);
+          pushBodyWeightSilently(dateYmd, lbs);
           setWeightModalOpen(false);
           loadSessions();
         }}

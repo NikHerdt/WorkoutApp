@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -25,7 +25,19 @@ import {
   get1RMHistoryInRange,
   getBodyWeightEntries,
   getTotalVolumeForDays,
+  getSetting,
+  setSetting,
 } from '../db/database';
+import {
+  getNutritionOverview,
+  calorieAdjustmentFor,
+  computePerformanceVsBalance,
+  computeRestVsBalance,
+  computeProteinSummary,
+  computeTrainingDayIntake,
+  computeFuellingAnalysis,
+  loggedDays,
+} from '../utils/nutritionAnalysis';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_WIDTH = SCREEN_WIDTH - 64;
@@ -277,23 +289,60 @@ function buildAdaptiveYAxis(
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
+/**
+ * Which sections the user has collapsed, persisted so the choice survives
+ * leaving the tab. Only collapsed ids are stored, so a section added later
+ * defaults to open without needing a migration.
+ */
+const COLLAPSED_SECTIONS_KEY = 'analytics_collapsed_sections';
+
+/** Target body-weight change per week, as a percent. 0 = maintain. */
+const GOAL_RATE_KEY = 'nutrition_goal_rate_pct';
+
+const GOAL_RATES: { label: string; pct: number }[] = [
+  { label: 'Cut 1%', pct: -1 },
+  { label: 'Cut 0.5%', pct: -0.5 },
+  { label: 'Maintain', pct: 0 },
+  { label: 'Bulk 0.25%', pct: 0.25 },
+  { label: 'Bulk 0.5%', pct: 0.5 },
+];
+
+function loadCollapsedSections(): Set<string> {
+  try {
+    const raw = getSetting(COLLAPSED_SECTIONS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((v) => typeof v === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+const CollapsedSectionsContext = createContext<{
+  isCollapsed: (id: string) => boolean;
+  toggle: (id: string) => void;
+}>({ isCollapsed: () => false, toggle: () => {} });
+
 function CollapsibleSection({
+  id,
   title,
   subtitle,
   children,
-  defaultExpanded = true,
 }: {
+  /** Stable key for persisting the collapsed state. Never reuse across sections. */
+  id: string;
   title: string;
   subtitle?: string;
   children: React.ReactNode;
-  defaultExpanded?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const { isCollapsed, toggle } = useContext(CollapsedSectionsContext);
+  const expanded = !isCollapsed(id);
+  const setExpanded = () => toggle(id);
   return (
     <View style={styles.section}>
       <TouchableOpacity
         style={styles.collapsibleHeader}
-        onPress={() => setExpanded((v) => !v)}
+        onPress={setExpanded}
         activeOpacity={0.7}
       >
         <View style={styles.collapsibleHeaderText}>
@@ -413,6 +462,19 @@ export default function AnalyticsScreen() {
   const [relStrengthScores, setRelStrengthScores] = useState<
     { name: string; estimated_1rm: number; ratio: number }[]
   >([]);
+  // ── Nutrition-derived state (empty until Health Connect imports something) ──
+  const [nutrition, setNutrition] = useState<ReturnType<typeof getNutritionOverview> | null>(null);
+  const [perfVsBalance, setPerfVsBalance] = useState<ReturnType<typeof computePerformanceVsBalance> | null>(null);
+  const [restVsBalance, setRestVsBalance] = useState<ReturnType<typeof computeRestVsBalance> | null>(null);
+  const [protein, setProtein] = useState<ReturnType<typeof computeProteinSummary> | null>(null);
+  const [dayIntake, setDayIntake] = useState<ReturnType<typeof computeTrainingDayIntake> | null>(null);
+  const [fuelling, setFuelling] = useState<ReturnType<typeof computeFuellingAnalysis> | null>(null);
+  const [goalRatePct, setGoalRatePct] = useState<number>(() => {
+    const raw = getSetting(GOAL_RATE_KEY);
+    const n = raw == null ? NaN : parseFloat(raw);
+    return Number.isFinite(n) ? n : 0;
+  });
+
   const [strengthWeightRatio, setStrengthWeightRatio] = useState<{
     strengthChangePct: number;
     weightChangePct: number;
@@ -520,6 +582,25 @@ export default function AnalyticsScreen() {
       });
       setTopExercise1RMs(trends.filter((t) => t.data.length > 1));
 
+      // ── Nutrition & energy balance ──
+      // All of these no-op cheaply when nothing has been imported, so they can
+      // run unconditionally alongside the training queries.
+      const overview = getNutritionOverview(rangeDays);
+      setNutrition(overview);
+      if (overview.hasNutritionData) {
+        setPerfVsBalance(computePerformanceVsBalance(Math.max(rangeDays, 90)));
+        setRestVsBalance(computeRestVsBalance(Math.max(rangeDays, 90)));
+        setProtein(computeProteinSummary(rangeDays));
+        setDayIntake(computeTrainingDayIntake(rangeDays));
+        setFuelling(computeFuellingAnalysis(Math.max(rangeDays, 90)));
+      } else {
+        setPerfVsBalance(null);
+        setRestVsBalance(null);
+        setProtein(null);
+        setDayIntake(null);
+        setFuelling(null);
+      }
+
       // ── Fatigue Index (Acute:Chronic Workload Ratio) ──
       // AL = total volume last 7 days; CL = avg weekly volume over last 28 days
       const vol7 = getTotalVolumeForDays(7);
@@ -599,6 +680,25 @@ export default function AnalyticsScreen() {
     : fatigueIndex <= 1.3 ? 'Optimal training zone'
     : 'Overreaching — consider a rest day';
 
+  // Persisted collapse state: kept in React state for immediate feedback and
+  // mirrored to settings so it survives leaving the tab.
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(loadCollapsedSections);
+  const collapsedApi = useMemo(
+    () => ({
+      isCollapsed: (id: string) => collapsedSections.has(id),
+      toggle: (id: string) => {
+        setCollapsedSections((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          setSetting(COLLAPSED_SECTIONS_KEY, JSON.stringify([...next]));
+          return next;
+        });
+      },
+    }),
+    [collapsedSections]
+  );
+
   const rangeLabel = RANGES.find((r) => r.days === rangeDays)?.label ?? '';
   const binLabel = (() => {
     const t = getBinType(rangeDays);
@@ -617,6 +717,7 @@ export default function AnalyticsScreen() {
   });
 
   return (
+    <CollapsedSectionsContext.Provider value={collapsedApi}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -676,6 +777,7 @@ export default function AnalyticsScreen() {
       {/* Workout Heatmap */}
       {hasHeatmap && (
         <CollapsibleSection
+          id="heatmap"
           title="Workout Heatmap"
           subtitle={`Daily workout log — last ${rangeDays} days`}
         >
@@ -691,97 +793,10 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
-      {/* Training Frequency */}
-      {hasWeeklyData && (
-        <CollapsibleSection
-          title="Training Frequency"
-          subtitle={`Sessions per ${binLabel === 'bi-weekly' ? '2 weeks' : binLabel.replace('ly', '')} — last ${rangeDays} days`}
-        >
-          <View style={styles.chartCard}>
-            <BarChart
-              data={weeklyFreq}
-              width={PLOT_WIDTH}
-              height={160}
-              barWidth={barWidthForN(weeklyFreq.length)}
-              yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
-              roundedTop
-              xAxisColor={colors.border}
-              yAxisColor={colors.border}
-              yAxisTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
-              xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
-              rulesColor={colors.border}
-              backgroundColor={colors.surface}
-              noOfSections={4}
-              initialSpacing={8}
-              endSpacing={8}
-              showFractionalValues={false}
-              scrollToEnd
-            />
-          </View>
-        </CollapsibleSection>
-      )}
-
-      {/* Volume Trend */}
-      {hasWeeklyData && (
-        <CollapsibleSection
-          title="Volume Trend"
-          subtitle={`Total ${WEIGHT_UNIT} lifted per ${binLabel === 'bi-weekly' ? '2 weeks' : binLabel.replace('ly', '')} — last ${rangeDays} days`}
-        >
-          <View style={styles.chartCard}>
-            <BarChart
-              data={weeklyVol}
-              width={PLOT_WIDTH}
-              height={160}
-              barWidth={barWidthForN(weeklyVol.length)}
-              yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
-              roundedTop
-              xAxisColor={colors.border}
-              yAxisColor={colors.border}
-              yAxisTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
-              xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
-              rulesColor={colors.border}
-              backgroundColor={colors.surface}
-              noOfSections={4}
-              initialSpacing={8}
-              endSpacing={8}
-              showFractionalValues={false}
-              formatYLabel={(v) => formatVolume(Number(v))}
-              scrollToEnd
-            />
-          </View>
-        </CollapsibleSection>
-      )}
-
-      {/* Volume by Muscle Group */}
-      {hasMuscleData && (
-        <CollapsibleSection
-          title="Muscle Group Volume"
-          subtitle={`Last ${rangeDays} days`}
-        >
-          <View style={styles.card}>
-            {muscleVolume.map((item) => (
-              <View key={item.name} style={styles.muscleRow}>
-                <Text style={styles.muscleLabel} numberOfLines={1}>
-                  {item.name.charAt(0).toUpperCase() + item.name.slice(1)}
-                </Text>
-                <View style={styles.muscleBarTrack}>
-                  <View
-                    style={[
-                      styles.muscleBarFill,
-                      { width: `${Math.round(item.pct * 100)}%`, backgroundColor: muscleColor(item.name) },
-                    ]}
-                  />
-                </View>
-                <Text style={styles.muscleValue}>{formatVolume(item.volume)}</Text>
-              </View>
-            ))}
-          </View>
-        </CollapsibleSection>
-      )}
-
       {/* Body Weight Trend */}
       {hasBodyWeight && (
         <CollapsibleSection
+          id="body-weight"
           title="Body Weight"
           subtitle={`Last ${bodyWeight.length} entries (${WEIGHT_UNIT})`}
         >
@@ -834,9 +849,119 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
+      {/* Fatigue Index */}
+      {hasFatigueIndex && (
+        <CollapsibleSection
+          id="fatigue"
+          title="Fatigue Index"
+          subtitle="Acute vs chronic training load (ACWR) — this week vs 4-week avg"
+        >
+          <View style={styles.card}>
+            <View style={styles.fatigueRow}>
+              <Text style={[styles.fatigueValue, { color: fatigueColor }]}>
+                {fatigueIndex!.toFixed(2)}
+              </Text>
+              <View style={styles.fatigueRight}>
+                <Text style={[styles.fatigueStatus, { color: fatigueColor }]}>
+                  {fatigueStatusLabel}
+                </Text>
+                <Text style={styles.fatigueZoneHint}>
+                  {'< 0.8 under  •  0.8 – 1.3 optimal  •  > 1.3 overreaching'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Volume by Muscle Group */}
+      {hasMuscleData && (
+        <CollapsibleSection
+          id="muscle-volume"
+          title="Muscle Group Volume"
+          subtitle={`Last ${rangeDays} days`}
+        >
+          <View style={styles.card}>
+            {muscleVolume.map((item) => (
+              <View key={item.name} style={styles.muscleRow}>
+                <Text style={styles.muscleLabel} numberOfLines={1}>
+                  {item.name.charAt(0).toUpperCase() + item.name.slice(1)}
+                </Text>
+                <View style={styles.muscleBarTrack}>
+                  <View
+                    style={[
+                      styles.muscleBarFill,
+                      { width: `${Math.round(item.pct * 100)}%`, backgroundColor: muscleColor(item.name) },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.muscleValue}>{formatVolume(item.volume)}</Text>
+              </View>
+            ))}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Strength Gain vs Weight Gain */}
+      {hasStrengthWeightRatio && (
+        <CollapsibleSection
+          id="strength-vs-weight"
+          title="Strength vs Weight Gain"
+          subtitle={`${strengthWeightRatio!.topExerciseName} — last ${rangeDays} days`}
+        >
+          <View style={styles.card}>
+            <View style={styles.swRow}>
+              <View style={styles.swStat}>
+                <Text style={styles.swLabel}>Strength</Text>
+                <Text style={[
+                  styles.swValue,
+                  { color: strengthWeightRatio!.strengthChangePct >= 0 ? '#34D399' : colors.orange },
+                ]}>
+                  {strengthWeightRatio!.strengthChangePct >= 0 ? '+' : ''}
+                  {strengthWeightRatio!.strengthChangePct}%
+                </Text>
+              </View>
+              <View style={styles.swDivider} />
+              <View style={styles.swStat}>
+                <Text style={styles.swLabel}>Body Weight</Text>
+                <Text style={[
+                  styles.swValue,
+                  { color: colors.textSecondary },
+                ]}>
+                  {strengthWeightRatio!.weightChangePct >= 0 ? '+' : ''}
+                  {strengthWeightRatio!.weightChangePct}%
+                </Text>
+              </View>
+              {strengthWeightRatio!.ratio !== null && (
+                <>
+                  <View style={styles.swDivider} />
+                  <View style={styles.swStat}>
+                    <Text style={styles.swLabel}>Ratio</Text>
+                    <Text style={[styles.swValue, { color: colors.accent }]}>
+                      {strengthWeightRatio!.ratio > 0 ? '+' : ''}
+                      {strengthWeightRatio!.ratio}x
+                    </Text>
+                  </View>
+                </>
+              )}
+            </View>
+            {strengthWeightRatio!.ratio !== null && (
+              <Text style={styles.swCaption}>
+                {strengthWeightRatio!.ratio > 1
+                  ? `Strength improving ${strengthWeightRatio!.ratio}x faster than weight is changing`
+                  : strengthWeightRatio!.ratio < 0
+                  ? 'Losing strength while body weight changes — consider adjusting training'
+                  : 'Weight changing faster than strength — monitor recovery'}
+              </Text>
+            )}
+          </View>
+        </CollapsibleSection>
+      )}
+
       {/* Volume vs Body Weight — two stacked charts */}
       {hasAnyData && (
         <CollapsibleSection
+          id="volume-vs-weight"
           title="Volume vs Body Weight"
           subtitle={`${binLabel.charAt(0).toUpperCase() + binLabel.slice(1)} — last ${rangeDays} days`}
         >
@@ -921,9 +1046,155 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
+      {/* Strength Overview — all-time, range-independent */}
+      {has1RMs && (
+        <CollapsibleSection
+          id="strength-overview"
+          title="Strength Overview"
+          subtitle="All-time estimated 1RM per exercise"
+        >
+          <View style={styles.card}>
+            {top1RMs.map((item, idx) => (
+              <View
+                key={idx}
+                style={[styles.prRow, idx < top1RMs.length - 1 && styles.prRowBorder]}
+              >
+                <View style={styles.prLeft}>
+                  <Text style={styles.prExercise} numberOfLines={1}>{item.exercise_name}</Text>
+                  <Text style={styles.prDate}>
+                    {item.best_weight} {WEIGHT_UNIT} x {item.best_reps} reps — {item.last_date}
+                  </Text>
+                </View>
+                <View style={styles.prRight}>
+                  <Text style={styles.prWeight}>~{item.estimated_1rm} {WEIGHT_UNIT}</Text>
+                  <Text style={styles.pr1rm}>est. 1RM</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Relative Strength */}
+      {hasRelStrength && (
+        <CollapsibleSection
+          id="relative-strength"
+          title="Relative Strength"
+          subtitle="Estimated 1RM as a multiple of current body weight"
+        >
+          <View style={styles.card}>
+            {relStrengthScores.map((ex, idx) => (
+              <View
+                key={ex.name}
+                style={[styles.relRow, idx < relStrengthScores.length - 1 && styles.prRowBorder]}
+              >
+                <Text style={styles.relName} numberOfLines={1}>{ex.name}</Text>
+                <View style={styles.relRight}>
+                  <Text style={styles.relRatio}>{ex.ratio.toFixed(2)}x BW</Text>
+                  <Text style={styles.relWeight}>{ex.estimated_1rm} {WEIGHT_UNIT}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Training Frequency */}
+      {hasWeeklyData && (
+        <CollapsibleSection
+          id="frequency"
+          title="Training Frequency"
+          subtitle={`Sessions per ${binLabel === 'bi-weekly' ? '2 weeks' : binLabel.replace('ly', '')} — last ${rangeDays} days`}
+        >
+          <View style={styles.chartCard}>
+            <BarChart
+              data={weeklyFreq}
+              width={PLOT_WIDTH}
+              height={160}
+              barWidth={barWidthForN(weeklyFreq.length)}
+              yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
+              roundedTop
+              xAxisColor={colors.border}
+              yAxisColor={colors.border}
+              yAxisTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
+              xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
+              rulesColor={colors.border}
+              backgroundColor={colors.surface}
+              noOfSections={4}
+              initialSpacing={8}
+              endSpacing={8}
+              showFractionalValues={false}
+              scrollToEnd
+            />
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Recent PRs */}
+      {hasPRs && (
+        <CollapsibleSection
+          id="recent-prs"
+          title="Recent PRs"
+          subtitle={`Best set per exercise — last ${rangeDays} days`}
+        >
+          <View style={styles.card}>
+            {recentPRs.map((pr, idx) => (
+              <View
+                key={idx}
+                style={[styles.prRow, idx < recentPRs.length - 1 && styles.prRowBorder]}
+              >
+                <View style={styles.prLeft}>
+                  <Text style={styles.prExercise} numberOfLines={1}>{pr.exercise_name}</Text>
+                  <Text style={styles.prDate}>{pr.date}</Text>
+                </View>
+                <View style={styles.prRight}>
+                  <Text style={styles.prWeight}>
+                    {pr.max_weight} {WEIGHT_UNIT} x {pr.reps}
+                  </Text>
+                  <Text style={styles.pr1rm}>~{pr.estimated_1rm} {WEIGHT_UNIT} 1RM</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Volume Trend */}
+      {hasWeeklyData && (
+        <CollapsibleSection
+          id="volume"
+          title="Volume Trend"
+          subtitle={`Total ${WEIGHT_UNIT} lifted per ${binLabel === 'bi-weekly' ? '2 weeks' : binLabel.replace('ly', '')} — last ${rangeDays} days`}
+        >
+          <View style={styles.chartCard}>
+            <BarChart
+              data={weeklyVol}
+              width={PLOT_WIDTH}
+              height={160}
+              barWidth={barWidthForN(weeklyVol.length)}
+              yAxisLabelWidth={Y_AXIS_LABEL_WIDTH}
+              roundedTop
+              xAxisColor={colors.border}
+              yAxisColor={colors.border}
+              yAxisTextStyle={{ color: colors.textTertiary, fontSize: 9 }}
+              xAxisLabelTextStyle={{ color: colors.textTertiary, fontSize: 8 }}
+              rulesColor={colors.border}
+              backgroundColor={colors.surface}
+              noOfSections={4}
+              initialSpacing={8}
+              endSpacing={8}
+              showFractionalValues={false}
+              formatYLabel={(v) => formatVolume(Number(v))}
+              scrollToEnd
+            />
+          </View>
+        </CollapsibleSection>
+      )}
+
       {/* 1RM Trends for top exercises */}
       {has1RMTrends && (
         <CollapsibleSection
+          id="1rm-trends"
           title="1RM Trends"
           subtitle={`Estimated 1RM over time — last ${rangeDays} days`}
         >
@@ -968,166 +1239,363 @@ export default function AnalyticsScreen() {
         </CollapsibleSection>
       )}
 
-      {/* Recent PRs */}
-      {hasPRs && (
+      {/* Energy Balance & TDEE — the headline number when nutrition is available */}
+      {nutrition?.hasNutritionData && (
         <CollapsibleSection
-          title="Recent PRs"
-          subtitle={`Best set per exercise — last ${rangeDays} days`}
+          id="energy-balance"
+          title="Energy Balance"
+          subtitle="Maintenance calories measured from your own intake and weight trend"
         >
           <View style={styles.card}>
-            {recentPRs.map((pr, idx) => (
-              <View
-                key={idx}
-                style={[styles.prRow, idx < recentPRs.length - 1 && styles.prRowBorder]}
-              >
-                <View style={styles.prLeft}>
-                  <Text style={styles.prExercise} numberOfLines={1}>{pr.exercise_name}</Text>
-                  <Text style={styles.prDate}>{pr.date}</Text>
+            {nutrition.tdee.tdee != null ? (
+              <>
+                <View style={styles.tdeeHeader}>
+                  <View>
+                    <Text style={styles.tdeeValue}>{nutrition.tdee.tdee.toLocaleString()}</Text>
+                    <Text style={styles.tdeeUnit}>kcal/day maintenance</Text>
+                  </View>
+                  <Text style={styles.tdeeConfidence}>{nutrition.tdee.confidence} confidence</Text>
                 </View>
-                <View style={styles.prRight}>
-                  <Text style={styles.prWeight}>
-                    {pr.max_weight} {WEIGHT_UNIT} x {pr.reps}
-                  </Text>
-                  <Text style={styles.pr1rm}>~{pr.estimated_1rm} {WEIGHT_UNIT} 1RM</Text>
-                </View>
-              </View>
-            ))}
-          </View>
-        </CollapsibleSection>
-      )}
 
-      {/* Strength Overview — all-time, range-independent */}
-      {has1RMs && (
-        <CollapsibleSection
-          title="Strength Overview"
-          subtitle="All-time estimated 1RM per exercise"
-        >
-          <View style={styles.card}>
-            {top1RMs.map((item, idx) => (
-              <View
-                key={idx}
-                style={[styles.prRow, idx < top1RMs.length - 1 && styles.prRowBorder]}
-              >
-                <View style={styles.prLeft}>
-                  <Text style={styles.prExercise} numberOfLines={1}>{item.exercise_name}</Text>
-                  <Text style={styles.prDate}>
-                    {item.best_weight} {WEIGHT_UNIT} x {item.best_reps} reps — {item.last_date}
-                  </Text>
+                <View style={styles.swRow}>
+                  <View style={styles.swStat}>
+                    <Text style={styles.swLabel}>Eating</Text>
+                    <Text style={styles.swValue}>{nutrition.tdee.meanIntake.toLocaleString()}</Text>
+                  </View>
+                  <View style={styles.swDivider} />
+                  <View style={styles.swStat}>
+                    <Text style={styles.swLabel}>Trend weight</Text>
+                    <Text style={styles.swValue}>
+                      {nutrition.tdee.currentTrendLbs?.toFixed(1)} {WEIGHT_UNIT}
+                    </Text>
+                  </View>
+                  <View style={styles.swDivider} />
+                  <View style={styles.swStat}>
+                    <Text style={styles.swLabel}>Per week</Text>
+                    <Text
+                      style={[
+                        styles.swValue,
+                        {
+                          color:
+                            Math.abs(nutrition.tdee.weeklyRatePct) < 0.05
+                              ? colors.textSecondary
+                              : nutrition.tdee.weeklyRateLbs > 0
+                                ? colors.blue
+                                : colors.orange,
+                        },
+                      ]}
+                    >
+                      {nutrition.tdee.weeklyRateLbs >= 0 ? '+' : ''}
+                      {nutrition.tdee.weeklyRateLbs.toFixed(2)}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.prRight}>
-                  <Text style={styles.prWeight}>~{item.estimated_1rm} {WEIGHT_UNIT}</Text>
-                  <Text style={styles.pr1rm}>est. 1RM</Text>
-                </View>
-              </View>
-            ))}
-          </View>
-        </CollapsibleSection>
-      )}
 
-      {/* Fatigue Index */}
-      {hasFatigueIndex && (
-        <CollapsibleSection
-          title="Fatigue Index"
-          subtitle="Acute vs chronic training load (ACWR) — this week vs 4-week avg"
-        >
-          <View style={styles.card}>
-            <View style={styles.fatigueRow}>
-              <Text style={[styles.fatigueValue, { color: fatigueColor }]}>
-                {fatigueIndex!.toFixed(2)}
-              </Text>
-              <View style={styles.fatigueRight}>
-                <Text style={[styles.fatigueStatus, { color: fatigueColor }]}>
-                  {fatigueStatusLabel}
+                <Text style={styles.goalLabel}>GOAL RATE</Text>
+                <View style={styles.goalRow}>
+                  {GOAL_RATES.map((g) => {
+                    const active = Math.abs(goalRatePct - g.pct) < 0.001;
+                    return (
+                      <TouchableOpacity
+                        key={g.label}
+                        style={[styles.goalChip, active && styles.goalChipActive]}
+                        onPress={() => {
+                          setGoalRatePct(g.pct);
+                          setSetting(GOAL_RATE_KEY, String(g.pct));
+                        }}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.goalChipText, active && styles.goalChipTextActive]}>
+                          {g.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {(() => {
+                  const adj = calorieAdjustmentFor(nutrition.tdee, goalRatePct);
+                  if (!adj) return null;
+                  const onTarget = Math.abs(adj.delta) < 75;
+                  return (
+                    <View style={styles.adviceBox}>
+                      <Text style={styles.adviceTarget}>
+                        Target {adj.targetIntake.toLocaleString()} kcal/day
+                      </Text>
+                      <Text style={styles.adviceText}>
+                        {onTarget
+                          ? 'You are on target — keep intake where it is.'
+                          : `${adj.delta > 0 ? 'Add' : 'Remove'} about ${Math.abs(adj.delta)} kcal/day from your current average.`}
+                      </Text>
+                    </View>
+                  );
+                })()}
+
+                <Text style={styles.coverageNote}>
+                  Based on {nutrition.tdee.daysLogged} logged days over {nutrition.tdee.windowDays}.
+                  Rate comes from a regression on your weigh-ins, so single heavy days don\u2019t skew it.
                 </Text>
-                <Text style={styles.fatigueZoneHint}>
-                  {'< 0.8 under  •  0.8 – 1.3 optimal  •  > 1.3 overreaching'}
-                </Text>
-              </View>
-            </View>
+              </>
+            ) : (
+              <Text style={styles.blockedText}>{nutrition.tdee.blockedReason}</Text>
+            )}
           </View>
         </CollapsibleSection>
       )}
 
-      {/* Relative Strength */}
-      {hasRelStrength && (
+      {/* Calories & macros */}
+      {nutrition?.hasNutritionData && (
         <CollapsibleSection
-          title="Relative Strength"
-          subtitle="Estimated 1RM as a multiple of current body weight"
+          id="nutrition-trend"
+          title="Calories & Macros"
+          subtitle={`Imported from Cronometer \u2014 ${nutrition.daysStored} logged days`}
         >
           <View style={styles.card}>
-            {relStrengthScores.map((ex, idx) => (
-              <View
-                key={ex.name}
-                style={[styles.relRow, idx < relStrengthScores.length - 1 && styles.prRowBorder]}
-              >
-                <Text style={styles.relName} numberOfLines={1}>{ex.name}</Text>
-                <View style={styles.relRight}>
-                  <Text style={styles.relRatio}>{ex.ratio.toFixed(2)}x BW</Text>
-                  <Text style={styles.relWeight}>{ex.estimated_1rm} {WEIGHT_UNIT}</Text>
+            {(() => {
+              const days = loggedDays(nutrition.nutrition);
+              const avg = (pick: (d: (typeof days)[number]) => number | null) => {
+                const vals = days.map(pick).filter((v): v is number => v != null);
+                return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+              };
+              return (
+                <View style={styles.statsGrid}>
+                  <StatCard label="Avg kcal" value={avg((d) => d.energy_kcal).toLocaleString()} highlight />
+                  <StatCard label="Protein (g)" value={String(avg((d) => d.protein_g))} />
+                  <StatCard label="Carbs (g)" value={String(avg((d) => d.carbs_g))} />
+                  <StatCard label="Fat (g)" value={String(avg((d) => d.fat_g))} />
+                  <StatCard label="Fiber (g)" value={String(avg((d) => d.fiber_g))} />
                 </View>
-              </View>
-            ))}
+              );
+            })()}
           </View>
         </CollapsibleSection>
       )}
 
-      {/* Strength Gain vs Weight Gain */}
-      {hasStrengthWeightRatio && (
+      {/* Strength vs energy balance */}
+      {perfVsBalance && (
         <CollapsibleSection
-          title="Strength vs Weight Gain"
-          subtitle={`${strengthWeightRatio!.topExerciseName} — last ${rangeDays} days`}
+          id="strength-vs-balance"
+          title="Strength vs Energy Balance"
+          subtitle="How sessions went depending on how you were eating around them"
+        >
+          <View style={styles.card}>
+            {perfVsBalance.insufficientReason ? (
+              <Text style={styles.blockedText}>{perfVsBalance.insufficientReason}</Text>
+            ) : (
+              <>
+                {perfVsBalance.buckets.map((b, idx) => (
+                  <View
+                    key={b.label}
+                    style={[styles.relRow, idx < perfVsBalance.buckets.length - 1 && styles.prRowBorder]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.relName}>{b.label}</Text>
+                      <Text style={styles.subtleNote}>
+                        {b.sessions} session{b.sessions === 1 ? '' : 's'} \u00b7 avg {b.meanBalance >= 0 ? '+' : ''}
+                        {b.meanBalance} kcal
+                      </Text>
+                    </View>
+                    <View style={styles.relRight}>
+                      <Text
+                        style={[
+                          styles.relRatio,
+                          {
+                            color:
+                              b.meanE1rmDeltaPct >= 1
+                                ? colors.success
+                                : b.meanE1rmDeltaPct <= -1
+                                  ? colors.danger
+                                  : colors.textSecondary,
+                          },
+                        ]}
+                      >
+                        {b.meanE1rmDeltaPct >= 0 ? '+' : ''}
+                        {b.meanE1rmDeltaPct.toFixed(1)}%
+                      </Text>
+                      <Text style={styles.relWeight}>{b.meanE1rm} {WEIGHT_UNIT} e1RM</Text>
+                    </View>
+                  </View>
+                ))}
+                <Text style={styles.coverageNote}>
+                  Change in best estimated 1RM against your earliest sessions in this window. Strength
+                  holding through a deficit is the sign the cut is going well.
+                </Text>
+              </>
+            )}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Rest response vs energy balance */}
+      {restVsBalance && (
+        <CollapsibleSection
+          id="rest-vs-balance"
+          title="Recovery vs Energy Balance"
+          subtitle="Whether inter-set recovery suffers when under-fuelled"
+        >
+          <View style={styles.card}>
+            {restVsBalance.insufficientReason ? (
+              <Text style={styles.blockedText}>{restVsBalance.insufficientReason}</Text>
+            ) : (
+              <>
+                {restVsBalance.groups.map((g, idx) => (
+                  <View
+                    key={g.label}
+                    style={[styles.relRow, idx < restVsBalance.groups.length - 1 && styles.prRowBorder]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.relName}>{g.label}</Text>
+                      <Text style={styles.subtleNote}>
+                        {g.pairs} timed sets \u00b7 avg rest {Math.floor(g.meanRestSeconds / 60)}:
+                        {String(g.meanRestSeconds % 60).padStart(2, '0')}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.relRatio,
+                        { color: g.meanDeltaPct >= 0 ? colors.success : colors.danger },
+                      ]}
+                    >
+                      {g.meanDeltaPct >= 0 ? '+' : ''}
+                      {g.meanDeltaPct.toFixed(1)}%
+                    </Text>
+                  </View>
+                ))}
+                {restVsBalance.deficitPenaltyPct != null && (
+                  <Text style={styles.coverageNote}>
+                    {restVsBalance.deficitPenaltyPct > 1
+                      ? `You hold ${restVsBalance.deficitPenaltyPct.toFixed(1)}% more of a set when eating at or above maintenance. Consider resting longer while cutting.`
+                      : 'No meaningful recovery penalty from your deficit so far.'}
+                  </Text>
+                )}
+              </>
+            )}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Protein adequacy */}
+      {protein && !protein.insufficientReason && (
+        <CollapsibleSection
+          id="protein"
+          title="Protein"
+          subtitle="Intake relative to body weight"
         >
           <View style={styles.card}>
             <View style={styles.swRow}>
               <View style={styles.swStat}>
-                <Text style={styles.swLabel}>Strength</Text>
-                <Text style={[
-                  styles.swValue,
-                  { color: strengthWeightRatio!.strengthChangePct >= 0 ? '#34D399' : colors.orange },
-                ]}>
-                  {strengthWeightRatio!.strengthChangePct >= 0 ? '+' : ''}
-                  {strengthWeightRatio!.strengthChangePct}%
+                <Text style={styles.swLabel}>Avg per day</Text>
+                <Text style={styles.swValue}>{protein.meanProteinG} g</Text>
+              </View>
+              <View style={styles.swDivider} />
+              <View style={styles.swStat}>
+                <Text style={styles.swLabel}>Per {WEIGHT_UNIT}</Text>
+                <Text
+                  style={[
+                    styles.swValue,
+                    { color: protein.gramsPerLb >= 0.7 ? colors.success : colors.orange },
+                  ]}
+                >
+                  {protein.gramsPerLb.toFixed(2)}
                 </Text>
               </View>
               <View style={styles.swDivider} />
               <View style={styles.swStat}>
-                <Text style={styles.swLabel}>Body Weight</Text>
-                <Text style={[
-                  styles.swValue,
-                  { color: colors.textSecondary },
-                ]}>
-                  {strengthWeightRatio!.weightChangePct >= 0 ? '+' : ''}
-                  {strengthWeightRatio!.weightChangePct}%
+                <Text style={styles.swLabel}>Days on target</Text>
+                <Text style={styles.swValue}>
+                  {protein.daysMeetingTarget}/{protein.daysLogged}
                 </Text>
               </View>
-              {strengthWeightRatio!.ratio !== null && (
-                <>
-                  <View style={styles.swDivider} />
-                  <View style={styles.swStat}>
-                    <Text style={styles.swLabel}>Ratio</Text>
-                    <Text style={[styles.swValue, { color: colors.accent }]}>
-                      {strengthWeightRatio!.ratio > 0 ? '+' : ''}
-                      {strengthWeightRatio!.ratio}x
-                    </Text>
-                  </View>
-                </>
-              )}
             </View>
-            {strengthWeightRatio!.ratio !== null && (
-              <Text style={styles.swCaption}>
-                {strengthWeightRatio!.ratio > 1
-                  ? `Strength improving ${strengthWeightRatio!.ratio}x faster than weight is changing`
-                  : strengthWeightRatio!.ratio < 0
-                  ? 'Losing strength while body weight changes — consider adjusting training'
-                  : 'Weight changing faster than strength — monitor recovery'}
-              </Text>
+            <Text style={styles.coverageNote}>
+              Target line is 0.7 g per {WEIGHT_UNIT} of body weight \u2014 a common floor for lifters
+              holding muscle in a deficit.
+            </Text>
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Pre-workout fuelling */}
+      {fuelling && (
+        <CollapsibleSection
+          id="fuelling"
+          title="Workout Fuelling"
+          subtitle={`Performance by what you ate in the ${fuelling.windowHours}h before training`}
+        >
+          <View style={styles.card}>
+            {fuelling.insufficientReason ? (
+              <Text style={styles.blockedText}>{fuelling.insufficientReason}</Text>
+            ) : (
+              <>
+                {fuelling.groups.map((g, idx) => (
+                  <View
+                    key={g.label}
+                    style={[styles.relRow, idx < fuelling.groups.length - 1 && styles.prRowBorder]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.relName}>{g.label}</Text>
+                      <Text style={styles.subtleNote}>
+                        {g.sessions} session{g.sessions === 1 ? '' : 's'} \u00b7 avg {g.meanPreKcal} kcal before
+                      </Text>
+                    </View>
+                    <View style={styles.relRight}>
+                      <Text style={styles.relRatio}>{g.meanE1rm} {WEIGHT_UNIT}</Text>
+                      <Text style={styles.relWeight}>{formatVolume(g.meanVolume)} vol</Text>
+                    </View>
+                  </View>
+                ))}
+                <Text style={styles.coverageNote}>
+                  Only sessions on days with meals logged are counted, so an untracked day isn\u2019t
+                  mistaken for training fasted.
+                </Text>
+              </>
             )}
+          </View>
+        </CollapsibleSection>
+      )}
+
+      {/* Training day vs rest day intake */}
+      {dayIntake && !dayIntake.insufficientReason && (
+        <CollapsibleSection
+          id="training-day-intake"
+          title="Training vs Rest Day Intake"
+          subtitle="Whether you actually eat more on the days you train"
+        >
+          <View style={styles.card}>
+            <View style={styles.swRow}>
+              <View style={styles.swStat}>
+                <Text style={styles.swLabel}>Training days</Text>
+                <Text style={styles.swValue}>{dayIntake.trainingDayKcal.toLocaleString()}</Text>
+              </View>
+              <View style={styles.swDivider} />
+              <View style={styles.swStat}>
+                <Text style={styles.swLabel}>Rest days</Text>
+                <Text style={styles.swValue}>{dayIntake.restDayKcal.toLocaleString()}</Text>
+              </View>
+              <View style={styles.swDivider} />
+              <View style={styles.swStat}>
+                <Text style={styles.swLabel}>Difference</Text>
+                <Text
+                  style={[
+                    styles.swValue,
+                    { color: dayIntake.differenceKcal >= 0 ? colors.success : colors.orange },
+                  ]}
+                >
+                  {dayIntake.differenceKcal >= 0 ? '+' : ''}
+                  {dayIntake.differenceKcal}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.coverageNote}>
+              {dayIntake.trainingDays} training days vs {dayIntake.restDays} rest days logged.
+            </Text>
           </View>
         </CollapsibleSection>
       )}
 
       <View style={{ height: 40 }} />
     </ScrollView>
+    </CollapsedSectionsContext.Provider>
   );
 }
 
@@ -1427,6 +1895,60 @@ const styles = StyleSheet.create({
   swLabel: { color: colors.textTertiary, fontSize: 10, fontWeight: '600', textTransform: 'uppercase', marginBottom: 4 },
   swValue: { fontSize: 22, fontWeight: '800' },
   swDivider: { width: 1, backgroundColor: colors.border, marginHorizontal: 4 },
+  // ── Nutrition / energy balance ──
+  tdeeHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  tdeeValue: { color: colors.accent, fontSize: 36, fontWeight: '700', lineHeight: 40 },
+  tdeeUnit: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+  tdeeConfidence: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    textTransform: 'capitalize',
+    marginTop: 6,
+  },
+  goalLabel: {
+    color: colors.textTertiary,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    marginTop: 18,
+    marginBottom: 8,
+  },
+  goalRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  goalChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+  },
+  goalChipActive: { borderColor: colors.accent, backgroundColor: colors.accent + '20' },
+  goalChipText: { color: colors.textSecondary, fontSize: 12, fontWeight: '600' },
+  goalChipTextActive: { color: colors.accent },
+  adviceBox: {
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: colors.accent + '14',
+    borderWidth: 1,
+    borderColor: colors.accent + '3A',
+  },
+  adviceTarget: { color: colors.accent, fontSize: 15, fontWeight: '700' },
+  adviceText: { color: colors.textSecondary, fontSize: 12, lineHeight: 18, marginTop: 4 },
+  coverageNote: { color: colors.textTertiary, fontSize: 11, lineHeight: 16, marginTop: 12 },
+  blockedText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+    fontStyle: 'italic',
+  },
+  subtleNote: { color: colors.textTertiary, fontSize: 11, marginTop: 2 },
+
   swCaption: {
     color: colors.textSecondary,
     fontSize: 12,

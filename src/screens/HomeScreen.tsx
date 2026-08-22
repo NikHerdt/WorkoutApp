@@ -23,6 +23,7 @@ import {
 } from '../db/database';
 import ExerciseSubstituteModal from '../components/ExerciseSubstituteModal';
 import CloudSyncSettings from '../components/CloudSyncSettings';
+import HealthConnectSettings from '../components/HealthConnectSettings';
 import AiSettings from '../components/AiSettings';
 import { SCHEDULE, DAY_LABELS, DayType } from '../types';
 import { getWeekCountForPhase, projectPhaseAfterProgramWeeks } from '../data/programWeeks';
@@ -542,6 +543,7 @@ export default function HomeScreen() {
           </View>
           <AiSettings />
           <CloudSyncSettings />
+          <HealthConnectSettings />
         </View>
 
       </ScrollView>

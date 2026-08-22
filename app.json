@@ -26,7 +26,11 @@
       "package": "com.ppl.tracker",
       "permissions": [
         "android.permission.USE_EXACT_ALARM",
-        "android.permission.SCHEDULE_EXACT_ALARM"
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.health.READ_WEIGHT",
+        "android.permission.health.WRITE_WEIGHT",
+        "android.permission.health.READ_NUTRITION",
+        "android.permission.health.READ_HEALTH_DATA_HISTORY"
       ]
     },
     "web": {
@@ -38,6 +42,15 @@
         "expo-notifications",
         {
           "iosDisplayInForeground": true
+        }
+      ],
+      "react-native-health-connect",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
         }
       ]
     ]
