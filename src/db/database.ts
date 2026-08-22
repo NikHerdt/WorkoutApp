@@ -75,6 +75,7 @@ export function initDatabase(): void {
       reps INTEGER DEFAULT 0,
       rpe REAL,
       completed_at TEXT NOT NULL,
+      rest_before_seconds INTEGER,
       FOREIGN KEY (session_id) REFERENCES workout_sessions(id),
       FOREIGN KEY (exercise_id) REFERENCES exercises(id)
     );
@@ -89,6 +90,42 @@ export function initDatabase(): void {
       weight_lbs REAL NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    /*
+     * Daily nutrition totals imported from Health Connect (written there by
+     * Cronometer). Cached locally rather than read live: Health Connect only
+     * serves a rolling window, so this is what lets long-range trends survive.
+     */
+    CREATE TABLE IF NOT EXISTS nutrition_log (
+      logged_date TEXT PRIMARY KEY,
+      energy_kcal REAL,
+      protein_g REAL,
+      carbs_g REAL,
+      fat_g REAL,
+      fiber_g REAL,
+      sodium_mg REAL,
+      /* Records that made up the day — a rough completeness signal. */
+      entry_count INTEGER DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
+    /*
+     * Individual logged meals, kept for their timestamps so intake can be
+     * related to session times (pre/post-workout fuelling).
+     */
+    CREATE TABLE IF NOT EXISTS nutrition_meals (
+      hc_record_id TEXT PRIMARY KEY,
+      logged_date TEXT NOT NULL,
+      start_time TEXT NOT NULL,
+      meal_type INTEGER,
+      name TEXT,
+      energy_kcal REAL,
+      protein_g REAL,
+      carbs_g REAL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_nutrition_meals_date
+      ON nutrition_meals(logged_date, start_time);
 
     CREATE TABLE IF NOT EXISTS programs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,6 +192,8 @@ export function initDatabase(): void {
   // catalog plus per-workout slots.
   migrateShareExercisesAcrossWorkouts(database);
   migrateClearRedundantOverrides(database);
+  migrateAddRestBeforeSeconds(database);
+  migrateAddNutritionTables(database);
 
   database.runSync("INSERT OR IGNORE INTO settings (key, value) VALUES ('phase_week', '1')");
 }
@@ -329,6 +368,35 @@ function migrateClearRedundantOverrides(database: SQLite.SQLiteDatabase): void {
   if ((verRow?.user_version ?? 0) >= 8) return;
   clearRedundantSlotOverrides(database);
   database.execSync('PRAGMA user_version = 8');
+}
+
+/**
+ * One-time: measured gap between consecutive sets of an exercise, so rest can be
+ * analysed against what it did to the next set (user_version < 9).
+ */
+function migrateAddRestBeforeSeconds(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  if ((verRow?.user_version ?? 0) >= 9) return;
+
+  const cols = database.getAllSync<{ name: string }>('PRAGMA table_info(set_logs)');
+  if (!cols.some((c) => c.name === 'rest_before_seconds')) {
+    database.execSync('ALTER TABLE set_logs ADD COLUMN rest_before_seconds INTEGER');
+  }
+  // History can't be backfilled: before this, every set in a session was stamped
+  // with the same finish-time completed_at. Those rows stay null and are simply
+  // excluded from rest analysis.
+  database.execSync('PRAGMA user_version = 9');
+}
+
+/**
+ * One-time: local cache of nutrition imported from Health Connect
+ * (user_version < 10). The CREATE TABLE statements above already cover fresh
+ * installs; this just moves the version marker for existing ones.
+ */
+function migrateAddNutritionTables(database: SQLite.SQLiteDatabase): void {
+  const verRow = database.getFirstSync<{ user_version: number }>('PRAGMA user_version');
+  if ((verRow?.user_version ?? 0) >= 10) return;
+  database.execSync('PRAGMA user_version = 10');
 }
 
 /** Idempotent: the preprogrammed PPL×UL plan is represented as a builtin program row. */
@@ -640,6 +708,169 @@ export function getBodyWeightForDate(dateYmd: string): number | null {
   );
   if (row == null || !Number.isFinite(row.weight_lbs)) return null;
   return row.weight_lbs;
+}
+
+export interface NutritionDay {
+  logged_date: string;
+  energy_kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+  fiber_g: number | null;
+  sodium_mg: number | null;
+  entry_count: number;
+}
+
+/** Insert or replace a day's nutrition totals. */
+export function upsertNutritionDay(day: NutritionDay): void {
+  getDb().runSync(
+    `INSERT OR REPLACE INTO nutrition_log
+       (logged_date, energy_kcal, protein_g, carbs_g, fat_g, fiber_g, sodium_mg, entry_count, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      day.logged_date,
+      day.energy_kcal,
+      day.protein_g,
+      day.carbs_g,
+      day.fat_g,
+      day.fiber_g,
+      day.sodium_mg,
+      day.entry_count,
+      new Date().toISOString(),
+    ]
+  );
+}
+
+/** Replace the stored meals for a day. Meals are re-imported wholesale per day. */
+export function replaceNutritionMealsForDate(
+  dateYmd: string,
+  meals: {
+    hc_record_id: string;
+    start_time: string;
+    meal_type: number | null;
+    name: string | null;
+    energy_kcal: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+  }[]
+): void {
+  const db = getDb();
+  db.runSync('DELETE FROM nutrition_meals WHERE logged_date = ?', [dateYmd]);
+  for (const m of meals) {
+    db.runSync(
+      `INSERT OR REPLACE INTO nutrition_meals
+         (hc_record_id, logged_date, start_time, meal_type, name, energy_kcal, protein_g, carbs_g)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [m.hc_record_id, dateYmd, m.start_time, m.meal_type, m.name, m.energy_kcal, m.protein_g, m.carbs_g]
+    );
+  }
+}
+
+/** Daily nutrition totals, oldest first. */
+export function getNutritionDays(days?: number): NutritionDay[] {
+  const sql =
+    days == null
+      ? 'SELECT logged_date, energy_kcal, protein_g, carbs_g, fat_g, fiber_g, sodium_mg, entry_count FROM nutrition_log ORDER BY logged_date ASC'
+      : `SELECT logged_date, energy_kcal, protein_g, carbs_g, fat_g, fiber_g, sodium_mg, entry_count
+         FROM nutrition_log
+         WHERE logged_date >= date('now', 'localtime', ?)
+         ORDER BY logged_date ASC`;
+  return getDb().getAllSync<NutritionDay>(sql, days == null ? [] : [`-${days} days`]);
+}
+
+/** The most recent date with stored nutrition, or null. */
+export function getLatestNutritionDate(): string | null {
+  const row = getDb().getFirstSync<{ d: string }>(
+    'SELECT MAX(logged_date) as d FROM nutrition_log'
+  );
+  return row?.d ?? null;
+}
+
+export function getNutritionDayCount(): number {
+  return getDb().getFirstSync<{ n: number }>('SELECT COUNT(*) as n FROM nutrition_log')?.n ?? 0;
+}
+
+/** Meals with timestamps, for relating intake to session times. */
+export function getNutritionMeals(days: number): {
+  logged_date: string;
+  start_time: string;
+  meal_type: number | null;
+  energy_kcal: number | null;
+  protein_g: number | null;
+}[] {
+  return getDb().getAllSync(
+    `SELECT logged_date, start_time, meal_type, energy_kcal, protein_g
+     FROM nutrition_meals
+     WHERE logged_date >= date('now', 'localtime', ?)
+     ORDER BY start_time ASC`,
+    [`-${days} days`]
+  );
+}
+
+/**
+ * Completed sessions with their local date, start and end, plus that session's
+ * working-set volume and best estimated 1RM. The join point for every
+ * training-versus-nutrition analysis.
+ */
+export function getSessionTrainingSummaries(days: number): {
+  session_id: number;
+  date: string;
+  started_at: string;
+  completed_at: string;
+  volume: number;
+  best_e1rm: number;
+  working_sets: number;
+}[] {
+  return getDb().getAllSync(
+    `SELECT
+       ws.id as session_id,
+       date(datetime(ws.completed_at, 'localtime')) as date,
+       ws.started_at,
+       ws.completed_at,
+       COALESCE(SUM(CASE WHEN sl.weight > 0 THEN sl.weight * sl.reps ELSE sl.reps END), 0) as volume,
+       COALESCE(MAX(ROUND(sl.weight * (1.0 + sl.reps / 30.0), 1)), 0) as best_e1rm,
+       COUNT(sl.id) as working_sets
+     FROM workout_sessions ws
+     LEFT JOIN set_logs sl ON sl.session_id = ws.id AND sl.set_type = 'working' AND sl.reps > 0
+     WHERE ws.completed_at IS NOT NULL
+       AND date(datetime(ws.completed_at, 'localtime')) >= date('now', 'localtime', ?)
+     GROUP BY ws.id
+     ORDER BY ws.completed_at ASC`,
+    [`-${days} days`]
+  );
+}
+
+/**
+ * Every timed working set with the local date it happened on, so rest response
+ * can be sliced by that day's energy balance.
+ */
+export function getDatedRestSetRows(days: number): {
+  date: string;
+  session_id: number;
+  exercise_id: number;
+  set_type: string;
+  weight: number;
+  reps: number;
+  rest_before_seconds: number | null;
+}[] {
+  return getDb().getAllSync(
+    `SELECT
+       date(datetime(ws.completed_at, 'localtime')) as date,
+       sl.session_id, sl.exercise_id, sl.set_type, sl.weight, sl.reps, sl.rest_before_seconds
+     FROM set_logs sl
+     JOIN workout_sessions ws ON sl.session_id = ws.id
+     WHERE ws.completed_at IS NOT NULL
+       AND date(datetime(ws.completed_at, 'localtime')) >= date('now', 'localtime', ?)
+     ORDER BY sl.session_id ASC, sl.exercise_id ASC, sl.completed_at ASC`,
+    [`-${days} days`]
+  );
+}
+
+/** Every logged body weight, oldest first. Used to backfill external sync targets. */
+export function getAllBodyWeights(): { logged_date: string; weight_lbs: number }[] {
+  return getDb().getAllSync(
+    'SELECT logged_date, weight_lbs FROM body_weight_log ORDER BY logged_date ASC'
+  );
 }
 
 export function getRecentBodyWeights(limit = 20) {
@@ -1312,11 +1543,15 @@ export function logSet(
   weight: number,
   reps: number,
   rpe?: number,
-  machineBrand?: string | null
+  machineBrand?: string | null,
+  /** Epoch ms the set was actually completed. Defaults to now for callers without one. */
+  completedAtMs?: number | null,
+  /** Measured seconds since the previous set of this exercise in this session. */
+  restBeforeSeconds?: number | null
 ): void {
   getDb().runSync(
-    `INSERT INTO set_logs (session_id, exercise_id, exercise_order, set_number, set_type, weight, reps, rpe, machine_brand, completed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO set_logs (session_id, exercise_id, exercise_order, set_number, set_type, weight, reps, rpe, machine_brand, completed_at, rest_before_seconds)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       sessionId,
       exerciseId,
@@ -1327,7 +1562,10 @@ export function logSet(
       reps,
       rpe ?? null,
       machineBrand && machineBrand.trim() !== '' ? machineBrand.trim() : null,
-      new Date().toISOString(),
+      new Date(completedAtMs ?? Date.now()).toISOString(),
+      restBeforeSeconds != null && Number.isFinite(restBeforeSeconds)
+        ? Math.round(restBeforeSeconds)
+        : null,
     ]
   );
 }
@@ -1676,6 +1914,49 @@ export function getTop1RMs(limit = 15) {
      ORDER BY estimated_1rm DESC
      LIMIT ?`,
     [limit]
+  );
+}
+
+/**
+ * Every logged set of an exercise that carries measured inter-set timing, in the
+ * order it was performed. Consumers pair adjacent rows to relate the rest taken
+ * before a set to how that set went — see utils/restAnalysis.
+ */
+export function getRestSetRowsForExercise(
+  exerciseId: number,
+  brand?: string | null
+): {
+  session_id: number;
+  set_type: string;
+  weight: number;
+  reps: number;
+  rest_before_seconds: number | null;
+  completed_at: string;
+}[] {
+  const b = brandFilterSql(brand);
+  return getDb().getAllSync(
+    `SELECT sl.session_id, sl.set_type, sl.weight, sl.reps, sl.rest_before_seconds, sl.completed_at
+     FROM set_logs sl
+     JOIN workout_sessions ws ON sl.session_id = ws.id
+     WHERE sl.exercise_id = ? AND ws.completed_at IS NOT NULL${b.clause}
+     ORDER BY sl.session_id ASC, sl.completed_at ASC, sl.set_number ASC`,
+    [exerciseId, ...b.params]
+  );
+}
+
+/** Exercises with enough measured inter-set timing to be worth analysing. */
+export function getExercisesWithRestData(minPairs = 8): { id: number; name: string; timed_sets: number }[] {
+  return getDb().getAllSync(
+    `SELECT e.id, e.name, COUNT(*) as timed_sets
+     FROM set_logs sl
+     JOIN workout_sessions ws ON sl.session_id = ws.id
+     JOIN exercises e ON sl.exercise_id = e.id
+     WHERE ws.completed_at IS NOT NULL AND sl.rest_before_seconds IS NOT NULL
+       AND sl.set_type = 'working'
+     GROUP BY e.id
+     HAVING timed_sets >= ?
+     ORDER BY timed_sets DESC`,
+    [minPairs]
   );
 }
 

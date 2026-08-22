@@ -51,6 +51,13 @@ export interface SetLog {
   reps: number;
   rpe: number | null;
   completed_at: string;
+  /**
+   * Measured seconds from the previous logged set of this exercise in the same
+   * session to this one. Null for an exercise's first set and for sets logged
+   * before this was tracked. Note this spans the rest *and* the set itself —
+   * it is the interval between two log taps, not pure rest.
+   */
+  rest_before_seconds: number | null;
 }
 
 export interface ExerciseWithSets extends Exercise {
@@ -66,6 +73,12 @@ export interface ActiveSet {
   completed: boolean;
   /** Incremented when values are propagated from a previous set. Used as a remount key. */
   propagationVersion: number;
+  /**
+   * Epoch ms when the user tapped complete. Captured live so inter-set timing
+   * survives to set_logs — sets are only written to the DB at workout finish,
+   * so this is the sole record of when the set actually happened.
+   */
+  completedAtMs: number | null;
 }
 
 export interface ActiveExerciseState {

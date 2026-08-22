@@ -35,6 +35,7 @@ import type { ExerciseDetailParams } from '../navigation/AppNavigator';
 import { WEIGHT_UNIT, WEIGHT_UNIT_HEADER } from '../constants/weightUnits';
 import { AppConfirmModal, AppNoticeModal } from '../components/AppModalDialogs';
 import ExerciseEditModal from '../components/ExerciseEditModal';
+import RestInsightsCard from '../components/RestInsightsCard';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CHART_WIDTH = SCREEN_WIDTH - 64;
@@ -144,6 +145,8 @@ export default function ExerciseDetailScreen() {
   const [replaceConfirmOpen, setReplaceConfirmOpen] = useState(false);
   const [replacePendingId, setReplacePendingId] = useState<number | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+  /** Bumped to recompute rest insights after applying a suggestion or logging sets. */
+  const [restInsightsKey, setRestInsightsKey] = useState(0);
 
   const reloadDetail = useCallback(() => {
     const found = getAllExercises().find((e: any) => e.id === exerciseId);
@@ -418,6 +421,19 @@ export default function ExerciseDetailScreen() {
           </Text>
         </View>
       ) : null}
+
+      {/* Measured time between sets, and what it did to the next set */}
+      <RestInsightsCard
+        exerciseId={exerciseId}
+        brand={statsBrand}
+        currentRestSeconds={Number(exerciseDetail?.rest_seconds ?? 90)}
+        reloadKey={restInsightsKey}
+        onApplySuggestion={(seconds) => {
+          updateExercise(exerciseId, { restSeconds: seconds });
+          reloadDetail();
+          setRestInsightsKey((k) => k + 1);
+        }}
+      />
 
       {/* Exercise info */}
       {exerciseDetail && (

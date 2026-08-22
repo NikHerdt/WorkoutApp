@@ -279,6 +279,7 @@ function buildActiveExerciseState(
         (isTimed ? (lastReps > 0 ? String(lastReps) : '30') : ''),
       completed: false,
       propagationVersion: 0,
+      completedAtMs: null,
     });
   }
 
@@ -300,6 +301,7 @@ function buildActiveExerciseState(
           : '',
       completed: false,
       propagationVersion: 0,
+      completedAtMs: null,
     });
   }
 
@@ -589,23 +591,41 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     const { activeSessionId, activeExercises } = get();
     if (!activeSessionId) return;
 
-    // Log all completed sets in session exercise order
+    // Log all completed sets in session exercise order, carrying the live
+    // completion stamps so the gap between two sets of an exercise survives.
     activeExercises.forEach((exercise, exerciseOrder) => {
       const brand = exercise.tracksBrand ? exercise.machineBrand : null;
-      for (const setItem of exercise.sets) {
-        if (setItem.completed) {
-          logSet(
-            activeSessionId,
-            exercise.exerciseId,
-            exerciseOrder,
-            setItem.setNumber,
-            setItem.setType,
-            parseFloat(setItem.weight) || 0,
-            parseInt(setItem.reps) || 0,
-            undefined,
-            brand
-          );
-        }
+      const completed = exercise.sets.filter((s) => s.completed);
+      // Order by when they were actually done, not by row order: sets can be
+      // ticked out of order, and the gap only means anything in real time.
+      const inCompletionOrder = [...completed].sort(
+        (a, b) => (a.completedAtMs ?? 0) - (b.completedAtMs ?? 0)
+      );
+      const restBySet = new Map<ActiveSet, number | null>();
+      for (let i = 0; i < inCompletionOrder.length; i++) {
+        const current = inCompletionOrder[i];
+        const previous = i > 0 ? inCompletionOrder[i - 1] : null;
+        const gapMs =
+          previous?.completedAtMs != null && current.completedAtMs != null
+            ? current.completedAtMs - previous.completedAtMs
+            : null;
+        restBySet.set(current, gapMs != null && gapMs > 0 ? Math.round(gapMs / 1000) : null);
+      }
+
+      for (const setItem of completed) {
+        logSet(
+          activeSessionId,
+          exercise.exerciseId,
+          exerciseOrder,
+          setItem.setNumber,
+          setItem.setType,
+          parseFloat(setItem.weight) || 0,
+          parseInt(setItem.reps) || 0,
+          undefined,
+          brand,
+          setItem.completedAtMs,
+          restBySet.get(setItem) ?? null
+        );
       }
     });
 
@@ -757,7 +777,10 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
       const exercises = [...state.activeExercises];
       const sets = [...exercises[exerciseIndex].sets];
       const completedSet = sets[setIndex];
-      sets[setIndex] = { ...completedSet, completed: true };
+      // Stamped live: sets aren't written to the DB until the workout is
+      // finished, so this is the only record of when the set actually happened
+      // and the basis for measuring the gap to the next one.
+      sets[setIndex] = { ...completedSet, completed: true, completedAtMs: Date.now() };
 
       // Propagate weight/reps to the next uncompleted set only for working sets.
       // Warmup sets have pre-calculated presets and should not overwrite each other.
@@ -797,7 +820,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
     set((state) => {
       const exercises = [...state.activeExercises];
       const sets = [...exercises[exerciseIndex].sets];
-      sets[setIndex] = { ...sets[setIndex], completed: false };
+      sets[setIndex] = { ...sets[setIndex], completed: false, completedAtMs: null };
       exercises[exerciseIndex] = { ...exercises[exerciseIndex], sets };
       return { activeExercises: exercises };
     });
@@ -819,6 +842,7 @@ export const useWorkoutStore = create<WorkoutState>((set, get) => ({
         reps: lastSameType?.reps ?? '',
         completed: false,
         propagationVersion: 0,
+        completedAtMs: null,
       };
       const warmupCount = sets.filter((s) => s.setType === 'warmup').length;
       const insertAt = setType === 'warmup' ? warmupCount : sets.length;

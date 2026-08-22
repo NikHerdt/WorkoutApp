@@ -32,6 +32,8 @@ const BACKUP_TABLES = [
   'set_logs',
   'settings',
   'body_weight_log',
+  'nutrition_log',
+  'nutrition_meals',
   'programs',
   'program_days',
 ] as const;
