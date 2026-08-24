@@ -157,7 +157,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   bucketRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 10 },
-  bucketLabel: { color: colors.textSecondary, fontSize: 12, width: 74 },
+  bucketLabel: { color: colors.textSecondary, fontSize: 12, width: 86 },
   bucketBarTrack: {
     flex: 1,
     height: 20,
@@ -167,7 +167,7 @@ const styles = StyleSheet.create({
   },
   bucketBarFill: { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 4 },
   bucketN: { color: colors.textSecondary, fontSize: 11, marginLeft: 6 },
-  bucketDelta: { fontSize: 13, fontWeight: '700', width: 56, textAlign: 'right' },
+  bucketDelta: { fontSize: 13, fontWeight: '700', width: 64, textAlign: 'right' },
 
   legend: {
     color: colors.textTertiary,

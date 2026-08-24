@@ -84,6 +84,8 @@ export interface SyncResult {
   pulled: number;
   /** Records seen but skipped because a local entry already exists for that day. */
   skippedExisting: number;
+  /** Raw Nutrition records Health Connect returned. */
+  nutritionRecordsRead: number;
   /** Days of nutrition imported from Health Connect. */
   nutritionDays: number;
   /** Individual meal records stored for timing analysis. */
@@ -349,9 +351,13 @@ function addNullable(a: number | null, b: number | null): number | null {
  * Days are always replaced wholesale rather than merged: a day being re-imported
  * may have had entries edited or deleted in Cronometer since last time.
  */
-export async function pullNutrition(days: number): Promise<{ daysImported: number; meals: number }> {
+export async function pullNutrition(
+  days: number
+): Promise<{ recordsRead: number; daysImported: number; meals: number }> {
   const lib = getLib();
-  if (!lib || !getHealthConnectStatus().enabled) return { daysImported: 0, meals: 0 };
+  if (!lib || !getHealthConnectStatus().enabled) {
+    return { recordsRead: 0, daysImported: 0, meals: 0 };
+  }
 
   await lib.initialize();
   const end = new Date();
@@ -447,7 +453,10 @@ export async function pullNutrition(days: number): Promise<{ daysImported: numbe
     meals += day.meals.length;
   }
 
-  return { daysImported: byDate.size, meals };
+  // recordsRead is reported separately from daysImported so an empty result can
+  // be told apart from a parsing failure: zero records means Cronometer has
+  // written nothing, whereas records with no days imported would be our bug.
+  return { recordsRead: records.length, daysImported: byDate.size, meals };
 }
 
 /** Manual sync: push weights, then import weights and nutrition. */
@@ -473,6 +482,7 @@ export async function syncBodyWeightNow(days = DEFAULT_PULL_DAYS): Promise<SyncR
 
   // First nutrition import reaches as far back as allowed; later ones only need
   // to cover the gap since the newest cached day (plus slack for edits).
+  let nutritionRecordsRead = 0;
   let nutritionDays = 0;
   let nutritionMeals = 0;
   if (permissions.nutrition) {
@@ -486,10 +496,11 @@ export async function syncBodyWeightNow(days = DEFAULT_PULL_DAYS): Promise<SyncR
       reach = Math.min(reach, Math.max(7, sinceLatest + 3));
     }
     const result = await pullNutrition(reach);
+    nutritionRecordsRead = result.recordsRead;
     nutritionDays = result.daysImported;
     nutritionMeals = result.meals;
   }
 
   setSetting(LAST_SYNC_AT_KEY, new Date().toISOString());
-  return { pushed, pulled, skippedExisting, nutritionDays, nutritionMeals };
+  return { pushed, pulled, skippedExisting, nutritionRecordsRead, nutritionDays, nutritionMeals };
 }

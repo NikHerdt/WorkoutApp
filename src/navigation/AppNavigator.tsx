@@ -4,6 +4,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Text, View } from 'react-native';
 import { colors } from '../theme/colors';
+import { useWorkoutStore } from '../store/useWorkoutStore';
 import HomeScreen from '../screens/HomeScreen';
 import WorkoutScreen from '../screens/WorkoutScreen';
 import HistoryScreen from '../screens/HistoryScreen';
@@ -61,9 +62,16 @@ const screenOptions = {
 };
 
 function HomeStackNavigator() {
+  // Titled with whichever program is active, not a hardcoded name — switching
+  // programs should be visible in the header.
+  const activeProgramName = useWorkoutStore((s) => s.activeProgramName);
   return (
     <HomeStack.Navigator screenOptions={screenOptions}>
-      <HomeStack.Screen name="Home" component={HomeScreen} options={{ title: "PPLxUL" }} />
+      <HomeStack.Screen
+        name="Home"
+        component={HomeScreen}
+        options={{ title: activeProgramName || 'Highwater' }}
+      />
       <HomeStack.Screen name="Workout" component={WorkoutScreen} options={{ title: "Workout", headerBackTitle: '' }} />
       <HomeStack.Screen name="ExerciseDetail" component={ExerciseDetailScreen} options={({ route }) => ({ title: route.params.exerciseName, headerBackTitle: '' })} />
       <HomeStack.Screen name="EditWorkout" component={EditWorkoutScreen} options={({ route }) => ({ title: `Edit: ${route.params.workoutName}`, headerBackTitle: '' })} />

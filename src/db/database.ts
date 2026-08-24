@@ -786,6 +786,14 @@ export function getLatestNutritionDate(): string | null {
   return row?.d ?? null;
 }
 
+/** Oldest and newest stored nutrition dates, for showing what has been imported. */
+export function getNutritionDateRange(): { first: string | null; last: string | null } {
+  const row = getDb().getFirstSync<{ first: string | null; last: string | null }>(
+    'SELECT MIN(logged_date) as first, MAX(logged_date) as last FROM nutrition_log'
+  );
+  return { first: row?.first ?? null, last: row?.last ?? null };
+}
+
 export function getNutritionDayCount(): number {
   return getDb().getFirstSync<{ n: number }>('SELECT COUNT(*) as n FROM nutrition_log')?.n ?? 0;
 }

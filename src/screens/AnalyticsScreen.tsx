@@ -299,6 +299,42 @@ const COLLAPSED_SECTIONS_KEY = 'analytics_collapsed_sections';
 /** Target body-weight change per week, as a percent. 0 = maintain. */
 const GOAL_RATE_KEY = 'nutrition_goal_rate_pct';
 
+/** Which stats page is showing. Persisted so the tab survives leaving the screen. */
+const ACTIVE_PAGE_KEY = 'analytics_active_page';
+
+/**
+ * Sections split across pages so one screen isn't a mile of scrolling.
+ * Order within each page is the display order; ids must match CollapsibleSection.
+ */
+const PAGES: { id: string; label: string; sections: string[] }[] = [
+  {
+    id: 'training',
+    label: 'Training',
+    sections: [
+      'heatmap', 'fatigue', 'muscle-volume', 'strength-overview',
+      'relative-strength', 'frequency', 'recent-prs', 'volume', '1rm-trends',
+    ],
+  },
+  {
+    id: 'body',
+    label: 'Body',
+    sections: ['body-weight', 'strength-vs-weight', 'volume-vs-weight'],
+  },
+  {
+    id: 'nutrition',
+    label: 'Nutrition',
+    sections: [
+      'energy-balance', 'nutrition-trend', 'protein', 'training-day-intake',
+      'strength-vs-balance', 'rest-vs-balance', 'fuelling',
+    ],
+  },
+];
+
+/** section id -> page id */
+const SECTION_PAGE: Record<string, string> = Object.fromEntries(
+  PAGES.flatMap((pg) => pg.sections.map((sec) => [sec, pg.id]))
+);
+
 const GOAL_RATES: { label: string; pct: number }[] = [
   { label: 'Cut 1%', pct: -1 },
   { label: 'Cut 0.5%', pct: -0.5 },
@@ -321,7 +357,8 @@ function loadCollapsedSections(): Set<string> {
 const CollapsedSectionsContext = createContext<{
   isCollapsed: (id: string) => boolean;
   toggle: (id: string) => void;
-}>({ isCollapsed: () => false, toggle: () => {} });
+  activePage: string;
+}>({ isCollapsed: () => false, toggle: () => {}, activePage: PAGES[0].id });
 
 function CollapsibleSection({
   id,
@@ -335,7 +372,10 @@ function CollapsibleSection({
   subtitle?: string;
   children: React.ReactNode;
 }) {
-  const { isCollapsed, toggle } = useContext(CollapsedSectionsContext);
+  const { isCollapsed, toggle, activePage } = useContext(CollapsedSectionsContext);
+  // Sections filter themselves by page, so each one stays a single self-contained
+  // block rather than the whole screen being wrapped per page.
+  if (SECTION_PAGE[id] !== activePage) return null;
   const expanded = !isCollapsed(id);
   const setExpanded = () => toggle(id);
   return (
@@ -683,8 +723,13 @@ export default function AnalyticsScreen() {
   // Persisted collapse state: kept in React state for immediate feedback and
   // mirrored to settings so it survives leaving the tab.
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(loadCollapsedSections);
+  const [activePage, setActivePage] = useState<string>(() => {
+    const saved = getSetting(ACTIVE_PAGE_KEY);
+    return PAGES.some((pg) => pg.id === saved) ? (saved as string) : PAGES[0].id;
+  });
   const collapsedApi = useMemo(
     () => ({
+      activePage,
       isCollapsed: (id: string) => collapsedSections.has(id),
       toggle: (id: string) => {
         setCollapsedSections((prev) => {
@@ -696,7 +741,7 @@ export default function AnalyticsScreen() {
         });
       },
     }),
-    [collapsedSections]
+    [collapsedSections, activePage]
   );
 
   const rangeLabel = RANGES.find((r) => r.days === rangeDays)?.label ?? '';
@@ -759,6 +804,27 @@ export default function AnalyticsScreen() {
               </TouchableOpacity>
             ))}
           </View>
+          <View style={styles.pageTabs}>
+            {PAGES.map((pg) => {
+              const active = pg.id === activePage;
+              return (
+                <TouchableOpacity
+                  key={pg.id}
+                  style={[styles.pageTab, active && styles.pageTabActive]}
+                  onPress={() => {
+                    setActivePage(pg.id);
+                    setSetting(ACTIVE_PAGE_KEY, pg.id);
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.pageTabText, active && styles.pageTabTextActive]}>
+                    {pg.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
           <View style={styles.chartScaleRow}>
             <Text style={styles.chartScaleLabel}>Y-axis scaling</Text>
             <TouchableOpacity
@@ -1260,12 +1326,12 @@ export default function AnalyticsScreen() {
                 <View style={styles.swRow}>
                   <View style={styles.swStat}>
                     <Text style={styles.swLabel}>Eating</Text>
-                    <Text style={styles.swValue}>{nutrition.tdee.meanIntake.toLocaleString()}</Text>
+                    <Text numberOfLines={1} style={styles.swValue}>{nutrition.tdee.meanIntake.toLocaleString()}</Text>
                   </View>
                   <View style={styles.swDivider} />
                   <View style={styles.swStat}>
                     <Text style={styles.swLabel}>Trend weight</Text>
-                    <Text style={styles.swValue}>
+                    <Text numberOfLines={1} style={styles.swValue}>
                       {nutrition.tdee.currentTrendLbs?.toFixed(1)} {WEIGHT_UNIT}
                     </Text>
                   </View>
@@ -1333,7 +1399,7 @@ export default function AnalyticsScreen() {
 
                 <Text style={styles.coverageNote}>
                   Based on {nutrition.tdee.daysLogged} logged days over {nutrition.tdee.windowDays}.
-                  Rate comes from a regression on your weigh-ins, so single heavy days don\u2019t skew it.
+                  Rate comes from a regression on your weigh-ins, so single heavy days don’t skew it.
                 </Text>
               </>
             ) : (
@@ -1348,7 +1414,7 @@ export default function AnalyticsScreen() {
         <CollapsibleSection
           id="nutrition-trend"
           title="Calories & Macros"
-          subtitle={`Imported from Cronometer \u2014 ${nutrition.daysStored} logged days`}
+          subtitle={`Imported from Cronometer — ${nutrition.daysStored} logged days`}
         >
           <View style={styles.card}>
             {(() => {
@@ -1391,7 +1457,7 @@ export default function AnalyticsScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.relName}>{b.label}</Text>
                       <Text style={styles.subtleNote}>
-                        {b.sessions} session{b.sessions === 1 ? '' : 's'} \u00b7 avg {b.meanBalance >= 0 ? '+' : ''}
+                        {b.sessions} session{b.sessions === 1 ? '' : 's'} · avg {b.meanBalance >= 0 ? '+' : ''}
                         {b.meanBalance} kcal
                       </Text>
                     </View>
@@ -1446,7 +1512,7 @@ export default function AnalyticsScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.relName}>{g.label}</Text>
                       <Text style={styles.subtleNote}>
-                        {g.pairs} timed sets \u00b7 avg rest {Math.floor(g.meanRestSeconds / 60)}:
+                        {g.pairs} timed sets · avg rest {Math.floor(g.meanRestSeconds / 60)}:
                         {String(g.meanRestSeconds % 60).padStart(2, '0')}
                       </Text>
                     </View>
@@ -1485,11 +1551,11 @@ export default function AnalyticsScreen() {
             <View style={styles.swRow}>
               <View style={styles.swStat}>
                 <Text style={styles.swLabel}>Avg per day</Text>
-                <Text style={styles.swValue}>{protein.meanProteinG} g</Text>
+                <Text numberOfLines={1} style={styles.swValue}>{protein.meanProteinG} g</Text>
               </View>
               <View style={styles.swDivider} />
               <View style={styles.swStat}>
-                <Text style={styles.swLabel}>Per {WEIGHT_UNIT}</Text>
+                <Text style={styles.swLabel}>Grams per lb</Text>
                 <Text
                   style={[
                     styles.swValue,
@@ -1502,13 +1568,13 @@ export default function AnalyticsScreen() {
               <View style={styles.swDivider} />
               <View style={styles.swStat}>
                 <Text style={styles.swLabel}>Days on target</Text>
-                <Text style={styles.swValue}>
+                <Text numberOfLines={1} style={styles.swValue}>
                   {protein.daysMeetingTarget}/{protein.daysLogged}
                 </Text>
               </View>
             </View>
             <Text style={styles.coverageNote}>
-              Target line is 0.7 g per {WEIGHT_UNIT} of body weight \u2014 a common floor for lifters
+              Target line is 0.7 g per {WEIGHT_UNIT} of body weight — a common floor for lifters
               holding muscle in a deficit.
             </Text>
           </View>
@@ -1535,7 +1601,7 @@ export default function AnalyticsScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.relName}>{g.label}</Text>
                       <Text style={styles.subtleNote}>
-                        {g.sessions} session{g.sessions === 1 ? '' : 's'} \u00b7 avg {g.meanPreKcal} kcal before
+                        {g.sessions} session{g.sessions === 1 ? '' : 's'} · avg {g.meanPreKcal} kcal before
                       </Text>
                     </View>
                     <View style={styles.relRight}>
@@ -1545,7 +1611,7 @@ export default function AnalyticsScreen() {
                   </View>
                 ))}
                 <Text style={styles.coverageNote}>
-                  Only sessions on days with meals logged are counted, so an untracked day isn\u2019t
+                  Only sessions on days with meals logged are counted, so an untracked day isn’t
                   mistaken for training fasted.
                 </Text>
               </>
@@ -1565,12 +1631,12 @@ export default function AnalyticsScreen() {
             <View style={styles.swRow}>
               <View style={styles.swStat}>
                 <Text style={styles.swLabel}>Training days</Text>
-                <Text style={styles.swValue}>{dayIntake.trainingDayKcal.toLocaleString()}</Text>
+                <Text numberOfLines={1} style={styles.swValue}>{dayIntake.trainingDayKcal.toLocaleString()}</Text>
               </View>
               <View style={styles.swDivider} />
               <View style={styles.swStat}>
                 <Text style={styles.swLabel}>Rest days</Text>
-                <Text style={styles.swValue}>{dayIntake.restDayKcal.toLocaleString()}</Text>
+                <Text numberOfLines={1} style={styles.swValue}>{dayIntake.restDayKcal.toLocaleString()}</Text>
               </View>
               <View style={styles.swDivider} />
               <View style={styles.swStat}>
@@ -1611,13 +1677,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   sectionSubtitle: {
-    color: colors.textTertiary,
+    color: colors.textSecondary,
     fontSize: 12,
     marginBottom: 12,
     marginTop: 2,
   },
   sectionSubtitleInline: {
-    color: colors.textTertiary,
+    color: colors.textSecondary,
     fontSize: 12,
     marginTop: 2,
   },
@@ -1632,6 +1698,26 @@ const styles = StyleSheet.create({
   },
   collapsibleHeaderText: { flex: 1 },
   chevron: { color: colors.textTertiary, fontSize: 16, marginLeft: 8 },
+
+  // Page tabs
+  pageTabs: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 4,
+    marginBottom: 24,
+  },
+  pageTab: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  pageTabActive: { backgroundColor: colors.accent },
+  pageTabText: { color: colors.textSecondary, fontSize: 14, fontWeight: '600' },
+  pageTabTextActive: { color: colors.background, fontWeight: '700' },
 
   // Range selector
   rangeRow: {
@@ -1802,7 +1888,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     gap: 10,
   },
-  muscleLabel: { color: colors.textSecondary, fontSize: 13, width: 90, fontWeight: '500' },
+  muscleLabel: { color: colors.textSecondary, fontSize: 13, width: 104, fontWeight: '500' },
   muscleBarTrack: {
     flex: 1,
     height: 8,
@@ -1814,7 +1900,7 @@ const styles = StyleSheet.create({
   muscleValue: {
     color: colors.textSecondary,
     fontSize: 12,
-    width: 40,
+    width: 56,
     textAlign: 'right',
     fontWeight: '600',
   },
@@ -1891,9 +1977,9 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 8,
   },
-  swStat: { flex: 1, alignItems: 'center' },
+  swStat: { flex: 1, alignItems: 'center', paddingHorizontal: 2 },
   swLabel: { color: colors.textTertiary, fontSize: 10, fontWeight: '600', textTransform: 'uppercase', marginBottom: 4 },
-  swValue: { fontSize: 22, fontWeight: '800' },
+  swValue: { color: colors.text, fontSize: 20, fontWeight: '800', flexShrink: 1 },
   swDivider: { width: 1, backgroundColor: colors.border, marginHorizontal: 4 },
   // ── Nutrition / energy balance ──
   tdeeHeader: {
@@ -1940,14 +2026,13 @@ const styles = StyleSheet.create({
   },
   adviceTarget: { color: colors.accent, fontSize: 15, fontWeight: '700' },
   adviceText: { color: colors.textSecondary, fontSize: 12, lineHeight: 18, marginTop: 4 },
-  coverageNote: { color: colors.textTertiary, fontSize: 11, lineHeight: 16, marginTop: 12 },
+  coverageNote: { color: colors.textSecondary, fontSize: 11, lineHeight: 16, marginTop: 12 },
   blockedText: {
     color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 19,
-    fontStyle: 'italic',
   },
-  subtleNote: { color: colors.textTertiary, fontSize: 11, marginTop: 2 },
+  subtleNote: { color: colors.textSecondary, fontSize: 11, marginTop: 2 },
 
   swCaption: {
     color: colors.textSecondary,

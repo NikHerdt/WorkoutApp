@@ -16,7 +16,7 @@ import {
   SdkAvailability,
   HealthPermissions,
 } from '../services/healthConnect';
-import { getNutritionDayCount } from '../db/database';
+import { getNutritionDayCount, getNutritionDateRange } from '../db/database';
 import { AppNoticeModal } from './AppModalDialogs';
 
 function formatTimestamp(iso: string | null): string {
@@ -49,10 +49,15 @@ export default function HealthConnectSettings() {
   const [busy, setBusy] = useState<'connect' | 'sync' | null>(null);
   const [notice, setNotice] = useState<{ title: string; message: string } | null>(null);
   const [nutritionDays, setNutritionDays] = useState(0);
+  const [nutritionRange, setNutritionRange] = useState<{ first: string | null; last: string | null }>({
+    first: null,
+    last: null,
+  });
 
   const refresh = useCallback(() => {
     setStatus(getHealthConnectStatus());
     setNutritionDays(getNutritionDayCount());
+    setNutritionRange(getNutritionDateRange());
     if (!isHealthConnectSupported()) {
       setAvailability('unsupported-platform');
       return;
@@ -114,10 +119,23 @@ export default function HealthConnectSettings() {
       if (result.skippedExisting > 0) {
         parts.push(`${result.skippedExisting} skipped (already logged here)`);
       }
+      let message = `${parts.join(', ')}.`;
       if (permissions.nutrition) {
-        parts.push(`${result.nutritionDays} days of nutrition`);
+        if (result.nutritionRecordsRead === 0) {
+          // Nothing was there to read — that is Cronometer's side, not ours.
+          message +=
+            '\n\nNo nutrition found in Health Connect. Cronometer only writes it once you log food and it syncs, so check there first.';
+        } else {
+          message += `\n\nNutrition: read ${result.nutritionRecordsRead} entries, stored ${result.nutritionDays} day${
+            result.nutritionDays === 1 ? '' : 's'
+          }.`;
+          if (result.nutritionDays === 0) {
+            message +=
+              ' Entries were found but none could be read — that is a bug in this app, not your setup.';
+          }
+        }
       }
-      setNotice({ title: 'Sync complete', message: `${parts.join(', ')}.` });
+      setNotice({ title: 'Sync complete', message });
     } catch (e) {
       setNotice({ title: 'Sync failed', message: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -170,9 +188,15 @@ export default function HealthConnectSettings() {
     // Deliberately reports stored days rather than the history permission:
     // that permission cannot be read back reliably, so claiming "last 30 days
     // only" would often be a lie. Days actually imported is a fact.
-    const nutrition = permissions.nutrition
-      ? `nutrition on (${nutritionDays} days stored)`
-      : 'nutrition off';
+    const nutrition = !permissions.nutrition
+      ? 'nutrition off'
+      : nutritionDays === 0
+        ? 'nutrition on (nothing imported yet)'
+        : `nutrition on (${nutritionDays} day${nutritionDays === 1 ? '' : 's'}, ${
+            nutritionRange.first === nutritionRange.last
+              ? nutritionRange.first
+              : `${nutritionRange.first} to ${nutritionRange.last}`
+          })`;
     statusText = `${direction}, ${nutrition}. Last sync: ${formatTimestamp(status.lastSyncAt)}.`;
   }
 

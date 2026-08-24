@@ -28,6 +28,9 @@ const BACKUP_TABLES = [
   'phases',
   'workouts',
   'exercises',
+  // The per-workout exercise slots. Omitting this loses the entire link between
+  // a workout and its exercises: restoring without it leaves every day empty.
+  'workout_exercises',
   'workout_sessions',
   'set_logs',
   'settings',
